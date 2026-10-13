@@ -185,6 +185,15 @@ export function QueueProvider({ children }) {
     setVolumeState(Math.max(0, Math.min(1, v)))
   }, [])
 
+  // Live audio clock for frame-accurate consumers (karaoke lyrics). The
+  // `timeupdate` event above only fires ~4×/second, which is too coarse to keep
+  // word-level highlighting in step with the voice, so those views read this
+  // directly on every animation frame instead of relying on `currentTime`.
+  const getAudioTime = useCallback(() => {
+    const audio = audioRef.current
+    return audio ? audio.currentTime || 0 : 0
+  }, [])
+
   const stop = useCallback(() => {
     const audio = audioRef.current
     if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load() }
@@ -333,7 +342,7 @@ export function QueueProvider({ children }) {
     currentTime, duration, volume, shuffle, repeat,
     startQueue, playAt, playNextOf, appendToQueue,
     toggle, next, prev, seek, setVolume, stop, clear,
-    setShuffle, setRepeat,
+    setShuffle, setRepeat, getAudioTime,
     isCurrent: (id) => trackId(current) === id,
   }
 

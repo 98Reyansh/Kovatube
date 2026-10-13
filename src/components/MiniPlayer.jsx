@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQueue } from '../context/QueueContext'
 
 function fmt(t) {
@@ -40,20 +40,70 @@ function Btn({ name, children, onClick, active, label, className = '', tone = 'd
   )
 }
 
+// Lyrics are compared against the playhead with a tiny lead so a line/word
+// flips the instant it is sung rather than a frame late. These stay small
+// because the playhead itself is sampled every animation frame.
+const LINE_LEAD = 0.06
+const WORD_LEAD = 0.02
+
 // Timed-lyrics view. Highlights the line matching the playhead and keeps it
 // centred. Falls back to plain (untimed) text when no timing is available.
 // `ambient` renders the large, light-on-dark variant used by ambient mode.
-function LyricsView({ synced, plain, footer, currentTime, ambient = false }) {
+//
+// The playhead is sampled every animation frame from the live <audio> clock
+// (`getTime`) instead of the ~4 Hz `timeupdate` value, so lines and words land
+// on the beat rather than stepping in 250 ms jumps. The component re-renders
+// only when the active line or the number of sung words actually changes.
+// `offset` (seconds) shifts the lyrics later (+) or earlier (−) to line them up
+// with a recording whose intro differs from the lyric source.
+function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, ambient = false }) {
   const boxRef = useRef(null)
   const activeRef = useRef(null)
-  let activeIdx = -1
-  if (synced && synced.length) {
-    // Lines are sorted by time; the active one is the last with t <= playhead.
-    for (let i = 0; i < synced.length; i++) {
-      if (synced[i].t <= currentTime + 0.2) activeIdx = i
-      else break
+  const hasSynced = !!(synced && synced.length)
+
+  // Active line = last one whose timestamp has passed; `words` = how many of
+  // that line's words have been sung.
+  const markFor = useCallback((t) => {
+    let line = -1
+    if (hasSynced) {
+      for (let i = 0; i < synced.length; i++) {
+        if (synced[i].t <= t + LINE_LEAD) line = i
+        else break
+      }
     }
-  }
+    let words = 0
+    const ws = line >= 0 ? synced[line].words : null
+    if (ws) {
+      for (let j = 0; j < ws.length; j++) {
+        if (ws[j].t <= t + WORD_LEAD) words = j + 1
+        else break
+      }
+    }
+    return { line, words }
+  }, [synced, hasSynced])
+
+  const [mark, setMark] = useState({ line: -1, words: 0 })
+
+  // High-resolution path: follow the live audio clock every frame.
+  useEffect(() => {
+    if (!hasSynced || !getTime) return
+    let raf = 0
+    const loop = () => {
+      const next = markFor(getTime() - offset)
+      setMark((prev) => (prev.line === next.line && prev.words === next.words ? prev : next))
+      raf = requestAnimationFrame(loop)
+    }
+    raf = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(raf)
+  }, [hasSynced, getTime, markFor, offset])
+
+  // Fallback path when there's no live clock: follow the parent's `currentTime`.
+  useEffect(() => {
+    if (!hasSynced || getTime) return
+    setMark(markFor(currentTime - offset))
+  }, [hasSynced, getTime, markFor, offset, currentTime])
+
+  const activeIdx = mark.line
 
   useEffect(() => {
     const box = boxRef.current
@@ -69,7 +119,7 @@ function LyricsView({ synced, plain, footer, currentTime, ambient = false }) {
     ? 'py-2 text-xl sm:text-2xl lg:text-3xl leading-snug'
     : 'py-1 text-sm leading-relaxed'
 
-  if (synced && synced.length) {
+  if (hasSynced) {
     return (
       <div ref={boxRef} className={boxCls}>
         {synced.map((line, i) => {
@@ -81,8 +131,8 @@ function LyricsView({ synced, plain, footer, currentTime, ambient = false }) {
             return (
               <p key={i} ref={activeRef} className={`lrc-line lrc-line-active ${lineCls}`}>
                 {words.map((wd, j) => {
-                  const on = currentTime >= wd.t - 0.05
-                  const isNow = on && (j === words.length - 1 || currentTime < words[j + 1].t)
+                  const on = j < mark.words
+                  const isNow = j === mark.words - 1
                   return (
                     <span key={j}>
                       <span className={`lrc-word${on ? ' lrc-word-on' : ''}${isNow ? ' lrc-word-now' : ''}`}>{wd.w}</span>
@@ -112,17 +162,59 @@ function LyricsView({ synced, plain, footer, currentTime, ambient = false }) {
   )
 }
 
+// Nudge control for when the lyric source runs a little ahead of or behind the
+// recording (different master/intro). Persisted by the parent. Uses functional
+// updates so quick successive clicks accumulate correctly.
+function SyncControl({ offset, onChange, ambient }) {
+  const clamp = (v) => Math.max(-3, Math.min(3, Math.round(v * 100) / 100))
+  const btn = ambient
+    ? 'bg-white/10 hover:bg-white/20 text-white/80'
+    : 'bg-black/[0.05] dark:bg-white/[0.08] hover:bg-black/[0.1] dark:hover:bg-white/[0.14] text-gray-600 dark:text-gray-300'
+  const txt = ambient ? 'text-white/60' : 'text-gray-400 dark:text-gray-500'
+  return (
+    <div className={`flex items-center justify-center gap-2 text-[11px] ${txt}`}>
+      <span className="uppercase tracking-wider opacity-80">Sync</span>
+      <button
+        type="button"
+        onClick={() => onChange((v) => clamp(v - 0.05))}
+        aria-label="Lyrics earlier"
+        title="Lyrics earlier"
+        className={`w-6 h-6 rounded-full flex items-center justify-center leading-none transition-colors ${btn}`}
+      >−</button>
+      <span className="tabular-nums w-12 text-center">{offset > 0 ? '+' : ''}{offset.toFixed(2)}s</span>
+      <button
+        type="button"
+        onClick={() => onChange((v) => clamp(v + 0.05))}
+        aria-label="Lyrics later"
+        title="Lyrics later"
+        className={`w-6 h-6 rounded-full flex items-center justify-center leading-none transition-colors ${btn}`}
+      >+</button>
+    </div>
+  )
+}
+
 export default function MiniPlayer() {
   const {
     current, source, playing, loading,
     currentTime, duration, volume, shuffle, repeat,
     toggle, next, prev, seek, setVolume, setShuffle, setRepeat, clear,
+    getAudioTime,
   } = useQueue()
   const [expanded, setExpanded] = useState(false)
   const [view, setView] = useState('art') // 'art' | 'lyrics'
   const [ambient, setAmbient] = useState(false)
   const [lyrics, setLyrics] = useState(null) // { forId, loading, ok, text, reason, footer }
   const lyricsCache = useRef(new Map())
+
+  // Lyric sync nudge (seconds) — how far to delay the lyrics relative to the
+  // audio. Persisted so the user's calibration sticks across sessions.
+  const [lyricOffset, setLyricOffset] = useState(() => {
+    const v = parseFloat(localStorage.getItem('yt_lyric_offset') || '0')
+    return Number.isFinite(v) ? v : 0
+  })
+  useEffect(() => {
+    try { localStorage.setItem('yt_lyric_offset', String(lyricOffset)) } catch { /* ignore */ }
+  }, [lyricOffset])
 
   // Fetch lyrics on demand (when the Lyrics tab or ambient mode is open),
   // cached per track so flipping back and forth never refetches.
@@ -170,6 +262,7 @@ export default function MiniPlayer() {
   const pct = duration ? (currentTime / duration) * 100 : 0
   const cycleRepeat = () => setRepeat(repeat === 'off' ? 'all' : repeat === 'all' ? 'one' : 'off')
   const showLyrics = lyrics && lyrics.forId === current.videoId ? lyrics : null
+  const hasSynced = !!(showLyrics && showLyrics.ok && showLyrics.synced && showLyrics.synced.length)
 
   return (
     <>
@@ -242,6 +335,8 @@ export default function MiniPlayer() {
                   plain={showLyrics.text}
                   footer={showLyrics.footer}
                   currentTime={currentTime}
+                  getTime={getAudioTime}
+                  offset={lyricOffset}
                 />
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-center gap-2 text-white/50">
@@ -253,6 +348,12 @@ export default function MiniPlayer() {
               )}
             </div>
           </div>
+
+          {hasSynced && (
+            <div className="relative z-10 pb-1">
+              <SyncControl offset={lyricOffset} onChange={setLyricOffset} ambient />
+            </div>
+          )}
 
           {/* Bottom transport */}
           <div className="relative z-10 px-6 pb-6 pt-2 w-full max-w-3xl mx-auto">
@@ -331,6 +432,8 @@ export default function MiniPlayer() {
                 plain={showLyrics.text}
                 footer={showLyrics.footer}
                 currentTime={currentTime}
+                getTime={getAudioTime}
+                offset={lyricOffset}
               />
             ) : (
               <div className="w-full h-56 rounded-2xl bg-black/[0.03] dark:bg-white/[0.05] border border-black/5 dark:border-white/10 flex flex-col items-center justify-center text-center gap-1">
@@ -339,6 +442,9 @@ export default function MiniPlayer() {
                 </svg>
                 <p className="text-sm text-gray-500 dark:text-gray-400">{showLyrics.reason || 'Lyrics not available'}</p>
               </div>
+            )}
+            {view === 'lyrics' && hasSynced && (
+              <SyncControl offset={lyricOffset} onChange={setLyricOffset} />
             )}
             <div className="text-center w-full">
               <p className="font-semibold text-lg truncate">{current.title}</p>

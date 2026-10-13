@@ -2593,7 +2593,13 @@ function parseLrc(lrc) {
   }
   lines.sort((a, b) => a.t - b.t)
 
-  // Interpolate word timings for line-level lyrics.
+  // Interpolate word timings for line-level lyrics. Weights favour syllables
+  // (with a little for word length) so long words hold the highlight longer,
+  // which tracks singing more closely than a flat per-character split.
+  const syllables = (w) => {
+    const m = String(w).toLowerCase().match(/[aeiouy]+/g)
+    return Math.max(1, m ? m.length : 1)
+  }
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line.words || !line.text) continue
@@ -2601,13 +2607,14 @@ function parseLrc(lrc) {
     if (!tokens.length) continue
     const next = lines[i + 1]
     const gap = next ? Math.max(0.3, next.t - line.t) : 4
-    const chars = tokens.reduce((n, w) => n + w.length, 0) || 1
-    const est = chars * 0.24 + 0.4 // rough time to sing the line
+    const weights = tokens.map((w) => syllables(w) + w.length * 0.15)
+    const total = weights.reduce((n, x) => n + x, 0) || 1
+    const est = total * 0.26 + 0.35 // rough time to sing the line
     const dur = Math.min(gap, Math.max(est, 0.7))
     let acc = 0
-    line.words = tokens.map((w) => {
-      const t = line.t + (dur * acc) / chars
-      acc += w.length
+    line.words = tokens.map((w, k) => {
+      const t = line.t + (dur * acc) / total
+      acc += weights[k]
       return { t, w }
     })
   }
