@@ -10,10 +10,6 @@ release/
 *.log
 npm-debug.log*
 
-# Temporary verification screenshots
-/ambient-desktop.png
-/ambient-mobile.png
-
 # Environment / secrets
 .env
 .env.local
