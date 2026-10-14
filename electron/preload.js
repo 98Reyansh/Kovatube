@@ -7,6 +7,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   saveFile: (data) => ipcRenderer.invoke('save-file', data),
 
+  // Connectivity (offline screen)
+  netProbe: () => ipcRenderer.invoke('net-probe'),
+  onNetworkError: (cb) => { ipcRenderer.on('network-error', () => cb()) },
+  removeNetworkErrorListeners: () => { ipcRenderer.removeAllListeners('network-error') },
+
   ytSearch: (query) => ipcRenderer.invoke('yt-search', query),
   ytHomeFeed: () => ipcRenderer.invoke('yt-home-feed'),
   ytShortsFeed: () => ipcRenderer.invoke('yt-shorts-feed'),

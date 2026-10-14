@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage, net } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -87,6 +87,43 @@ async function ytGetText(url) {
   const r = await fetch(url, { headers: { 'User-Agent': UA, Cookie: 'SOCS=CAI' } })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return r.text()
+}
+
+// ─── Network failure reporting ───────────────────────────────────────────────
+// Wrap the global fetch so any main-process request that fails at the network
+// level (DNS, refused, timeout, no route) can tell the renderer it looks
+// offline. The offline screen confirms with an explicit probe before showing.
+const nodeFetch = globalThis.fetch ? globalThis.fetch.bind(globalThis) : null
+
+function isNetworkError(e) {
+  if (!e) return false
+  const parts = [e.name, e.message, e.code]
+  if (e.cause) parts.push(e.cause.name, e.cause.message, e.cause.code)
+  const m = parts.filter(Boolean).join(' ')
+  return /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|getaddrinfo|network/i.test(m)
+}
+
+let lastNetNotify = 0
+function notifyNetworkFailure() {
+  const now = Date.now()
+  if (now - lastNetNotify < 1000) return
+  lastNetNotify = now
+  try {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send('network-error')
+    }
+  } catch { /* no windows yet */ }
+}
+
+if (nodeFetch) {
+  globalThis.fetch = async (...args) => {
+    try {
+      return await nodeFetch(...args)
+    } catch (e) {
+      if (isNetworkError(e)) notifyNetworkFailure()
+      throw e
+    }
+  }
 }
 
 // ─── Google/YouTube sign-in: capture authenticated cookies + personalized feed ──
@@ -4905,6 +4942,24 @@ function createWindow() {
 function setupIPC() {
   ipcMain.handle('get-app-path', () => CONFIG_DIR)
   ipcMain.handle('get-downloads-path', () => DOWNLOADS_DIR)
+
+  // Connectivity probe for the offline screen's "Retry" action. Uses the raw
+  // fetch (not the reporting wrapper) so a failed probe can't re-trigger itself.
+  ipcMain.handle('net-probe', async () => {
+    try {
+      if (net && typeof net.isOnline === 'function' && !net.isOnline()) {
+        return { ok: false, online: false, reason: 'offline' }
+      }
+    } catch { /* ignore */ }
+    const endpoints = ['https://www.youtube.com/generate_204', 'https://www.google.com/generate_204']
+    for (const url of endpoints) {
+      try {
+        const r = await (nodeFetch || fetch)(url, { method: 'GET', headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(4000) })
+        if (r) return { ok: true, online: true, status: r.status }
+      } catch { /* try the next endpoint */ }
+    }
+    return { ok: false, online: false, reason: 'unreachable' }
+  })
 
   ipcMain.handle('get-downloads-list', async () => {
     try { return fs.readdirSync(DOWNLOADS_DIR).map(f => ({ name: f, path: path.join(DOWNLOADS_DIR, f), size: fs.statSync(path.join(DOWNLOADS_DIR, f)).size, modified: fs.statSync(DOWNLOADS_DIR, f).mtime })) }

@@ -22,7 +22,9 @@ import { SavedProvider } from './context/SavedContext'
 import { ToastProvider } from './context/ToastContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { QueueProvider, useQueue } from './context/QueueContext'
+import { NetworkProvider, useNetwork } from './context/NetworkContext'
 import MiniPlayer from './components/MiniPlayer'
+import OfflineGate from './components/OfflineGate'
 
 // A thin accent progress line pinned to the very top of the window (above the
 // header) so any loading state reads as full-screen activity, never a gap.
@@ -56,9 +58,10 @@ function TopProgressBar() {
 function AnimatedRoutes() {
   const location = useLocation()
   const { current: queueCurrent } = useQueue()
+  const { refreshToken } = useNetwork()
   return (
     <main className={`flex-1 overflow-auto transition-[padding] duration-300 ${queueCurrent ? 'pb-20' : 'pb-0'}`}>
-      <div key={location.pathname} className="h-full">
+      <div key={location.pathname + ':' + refreshToken} className="h-full">
         <div className="p-4 page-enter">
           <Routes location={location}>
             <Route path="/" element={<Home />} />
@@ -96,6 +99,7 @@ function Layout() {
       <HeaderBar />
       {showIntro && <IntroLoader />}
       <AnimatedRoutes />
+      <OfflineGate />
       <MiniPlayer />
     </div>
   )
@@ -103,6 +107,7 @@ function Layout() {
 
 function App() {
   return (
+    <NetworkProvider>
     <SettingsProvider>
       <AuthProvider>
       <SearchProvider>
@@ -124,6 +129,7 @@ function App() {
       </SearchProvider>
       </AuthProvider>
     </SettingsProvider>
+    </NetworkProvider>
   )
 }
 
