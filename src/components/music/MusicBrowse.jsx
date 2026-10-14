@@ -1,12 +1,16 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQueue } from '../../context/QueueContext'
+import { useDownloads } from '../../context/DownloadContext'
+import { useToast } from '../../context/ToastContext'
 import TrackRow from './TrackRow'
 
 export default function MusicBrowse() {
   const { browseId } = useParams()
   const navigate = useNavigate()
   const { startQueue } = useQueue()
+  const { activeDownloads } = useDownloads()
+  const { addToast } = useToast()
   const [data, setData] = useState(null)
   const [loadingMore, setLoadingMore] = useState(false)
 
@@ -36,6 +40,31 @@ export default function MusicBrowse() {
       }))
     } catch { /* ignore */ } finally {
       setLoadingMore(false)
+    }
+  }
+
+  // How many tracks of this playlist are downloading right now (drives the
+  // button's progress state).
+  const activeIds = new Set(activeDownloads.map(d => d.videoId))
+  const downloadCount = tracks.filter(t => t.videoId && activeIds.has(t.videoId)).length
+
+  // Download the whole list as MP3, each track bundled with its lyrics sidecar.
+  const downloadAll = async () => {
+    const list = tracks.filter(t => t.videoId)
+    if (!list.length) return
+    try {
+      const res = await window.electronAPI?.dlPlaylist?.({
+        tracks: list.map(t => ({
+          videoId: t.videoId, title: t.title, thumbnail: t.thumbnail,
+          artist: t.artist, duration: t.duration,
+        })),
+      })
+      if (res && res.started) {
+        addToast('success', `Downloading ${list.length} track${list.length === 1 ? '' : 's'} with lyrics…`, 4000)
+      }
+    } catch (e) {
+      console.error('[MusicBrowse] playlist download failed:', e)
+      addToast('error', 'Could not start the playlist download', 4000)
     }
   }
 
@@ -88,6 +117,29 @@ export default function MusicBrowse() {
               >
                 <svg viewBox="0 0 24 24" className="w-4 h-4" fill="currentColor"><path d="M17 3h4v4h-2V6.414l-4.293 4.293-1.414-1.414L17.586 5H17V3zM3 5h4.586l3.707 3.707-1.414 1.414L6.586 7H3V5zm14 12h-2v-2h2v-.586l2-2V21h-4v-2h2v-.586l-4.293-4.293 1.414-1.414L17 15.414V17zM3 17h3.586l3.707-3.707 1.414 1.414L7.586 19H3v-2z" /></svg>
                 Shuffle
+              </button>
+              <button
+                onClick={downloadAll}
+                disabled={!tracks.length || downloadCount > 0}
+                className="btn-ghost px-4 py-2 text-sm flex items-center gap-2 text-gray-700 dark:text-gray-200 disabled:opacity-50"
+                title="Download this playlist as MP3, with lyrics"
+              >
+                {downloadCount > 0 ? (
+                  <>
+                    <svg viewBox="0 0 24 24" className="w-4 h-4 animate-spin" fill="none">
+                      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
+                      <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                    </svg>
+                    Downloading {downloadCount}
+                  </>
+                ) : (
+                  <>
+                    <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    Download
+                  </>
+                )}
               </button>
             </div>
           </div>

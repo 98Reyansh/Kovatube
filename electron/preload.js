@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Download pipeline
   dlStart: (opts) => ipcRenderer.invoke('dl-start', opts),
+  dlPlaylist: (opts) => ipcRenderer.invoke('dl-playlist', opts),
   dlCancel: (downloadId) => ipcRenderer.invoke('dl-cancel', downloadId),
   dlActive: () => ipcRenderer.invoke('dl-active'),
   dlCompleted: () => ipcRenderer.invoke('dl-completed'),

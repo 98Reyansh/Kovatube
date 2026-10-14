@@ -2868,7 +2868,7 @@ async function getRichLyrics(track, artist, duration) {
   const name = cleanTrackName(track)
   if (!name) return null
   const by = cleanArtistName(artist)
-  const dur = duration ? Math.round(duration) : null
+  const dur = durationToSeconds(duration) || null
   const withDur = () => { const p = { track: name }; if (by) p.artist = by; if (dur) p.duration = String(dur); return p }
   let results = []
   try { results = await lrcRedSearch(withDur()) } catch (e) { console.warn('[Music] lrc.red search', e.message) }
@@ -2976,6 +2976,84 @@ async function getMusicLyrics({ videoId, title, artist, duration } = {}) {
     if (lyricsCache.size > 200) lyricsCache.delete(lyricsCache.keys().next().value)
   }
   return guarded
+}
+
+// ── Lyrics sidecars (bundled with downloads) ────────────────────────────────
+
+// "3:45" / "1:02:03" / 225 -> seconds. Used to match lyric candidates by length.
+function durationToSeconds(d) {
+  if (d == null || d === '') return 0
+  if (typeof d === 'number') return Number.isFinite(d) ? Math.round(d) : 0
+  const parts = String(d).split(':').map((x) => parseInt(x, 10)).filter((n) => !Number.isNaN(n))
+  if (!parts.length) return 0
+  return parts.reduce((acc, n) => acc * 60 + n, 0)
+}
+
+// Serialize synced lyric lines to enhanced LRC ("[mm:ss.xx]<mm:ss.xx>word …"),
+// which the app's own parseLrc and most desktop players understand.
+function syncedToLrc(lines, meta = {}) {
+  const stamp = (t) => {
+    const s = Math.max(0, Number(t) || 0)
+    const m = Math.floor(s / 60)
+    const sec = s - m * 60
+    return `${String(m).padStart(2, '0')}:${sec.toFixed(2).padStart(5, '0')}`
+  }
+  const clean = (s) => String(s || '').replace(/[\r\n]+/g, ' ').trim()
+  const head = []
+  if (clean(meta.title)) head.push(`[ti:${clean(meta.title)}]`)
+  if (clean(meta.artist)) head.push(`[ar:${clean(meta.artist)}]`)
+  if (clean(meta.source)) head.push(`[re:${clean(meta.source)}]`)
+  const body = []
+  for (const line of lines || []) {
+    const words = Array.isArray(line.words) ? line.words : null
+    if (words && words.length) {
+      let seg = ''
+      for (const w of words) {
+        const word = clean(w.w)
+        if (!word) continue
+        seg += `<${stamp(w.t)}>${word} `
+      }
+      body.push(`[${stamp(line.t)}]${seg.trim()}`)
+    } else if (clean(line.text)) {
+      body.push(`[${stamp(line.t)}]${clean(line.text)}`)
+    }
+  }
+  if (!body.length) return ''
+  return head.concat(body).join('\n') + '\n'
+}
+
+// Fetch the track's lyrics and drop them next to the downloaded audio: timed
+// lyrics as "<track>.lrc", otherwise plain text as "<track>.txt".
+async function writeLyricsSidecar(dl) {
+  try {
+    if (!dl.filePath || !fs.existsSync(dl.filePath)) return null
+    const got = await getMusicLyrics({
+      videoId: dl.videoId, title: dl.title, artist: dl.artist, duration: dl.duration,
+    })
+    const base = dl.filePath.replace(/\.[^.]+$/, '')
+    const synced = got && got.ok && Array.isArray(got.synced) ? got.synced : null
+    if (synced && synced.length) {
+      const lrc = syncedToLrc(synced, { title: dl.title, artist: dl.artist, source: got.source })
+      if (lrc) {
+        const p = `${base}.lrc`
+        fs.writeFileSync(p, lrc, 'utf-8')
+        console.log(`[Download] Lyrics saved: ${path.basename(p)} (${got.source || got.syncType || 'synced'})`)
+        return p
+      }
+    }
+    const plain = got && got.lyrics ? String(got.lyrics).trim() : ''
+    if (plain) {
+      const p = `${base}.txt`
+      fs.writeFileSync(p, plain + '\n', 'utf-8')
+      console.log(`[Download] Lyrics saved (plain): ${path.basename(p)}`)
+      return p
+    }
+    console.log(`[Download] No lyrics found for ${dl.videoId}`)
+    return null
+  } catch (e) {
+    console.error('[Download] lyrics sidecar error:', e.message)
+    return null
+  }
 }
 
 // ── Signed-in library (reuses the app's hidden authed window) ───────────────
@@ -3628,6 +3706,7 @@ function streamDownload(downloadId) {
       dl.status = 'failed'
       dl.error = `HTTP ${response.statusCode}`
       sendToRenderer('download-progress', { id: downloadId, status: 'failed', error: dl.error })
+      if (dl._settle) dl._settle({ id: downloadId, ok: false, videoId: dl.videoId, error: dl.error })
       return
     }
 
@@ -3707,6 +3786,9 @@ function streamDownload(downloadId) {
           thumbnail: dl.thumbnail, quality: dl.quality, format: dl.format,
           completedAt: new Date().toISOString(),
         })
+        const finish = () => { if (dl._settle) dl._settle({ id: downloadId, ok: true, videoId: dl.videoId, filePath: dl.filePath }) }
+        if (dl.withLyrics) writeLyricsSidecar(dl).finally(finish)
+        else finish()
       })
     })
 
@@ -3716,6 +3798,7 @@ function streamDownload(downloadId) {
       fileStream.end()
       try { fs.unlinkSync(dl.filePath) } catch {}
       sendToRenderer('download-progress', { id: downloadId, status: 'failed', error: err.message })
+      if (dl._settle) dl._settle({ id: downloadId, ok: false, videoId: dl.videoId, error: err.message })
     })
   })
 
@@ -3723,6 +3806,7 @@ function streamDownload(downloadId) {
     dl.status = 'failed'
     dl.error = err.message
     sendToRenderer('download-progress', { id: downloadId, status: 'failed', error: err.message })
+    if (dl._settle) dl._settle({ id: downloadId, ok: false, videoId: dl.videoId, error: err.message })
   })
 
   dl.request = request
@@ -3768,7 +3852,7 @@ function persistThumbnail(videoId, url) {
   })
 }
 
-async function startDownload(videoId, quality, format, title, thumbnail, audio) {
+async function startDownload(videoId, quality, format, title, thumbnail, audio, opts = {}) {
   const dlId = `dl_${++downloadIdCounter}`
 
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`
@@ -3776,13 +3860,25 @@ async function startDownload(videoId, quality, format, title, thumbnail, audio) 
 
   const dl = {
     id: dlId, videoId, quality, format, title, thumbnail, audio: !!audio,
+    // Music downloads carry artist/length for lyric matching; withLyrics
+    // defaults on for audio so saved songs get an .lrc sidecar too.
+    artist: opts.artist || '',
+    duration: opts.duration || '',
+    withLyrics: opts.withLyrics !== undefined ? !!opts.withLyrics : !!audio,
     fileName, filePath: '', url: videoUrl,
     status: 'downloading', progress: 0, speed: 0,
     transferredBytes: 0, totalBytes: 0,
     startTime: Date.now(), error: null,
     fileStream: null, response: null, request: null,
     process: null,
+    done: null, _settle: null,
   }
+  // Resolves once the download is fully done (including its lyrics sidecar), so
+  // a batch downloader can move on to the next track instead of firing them all
+  // at once.
+  dl.done = new Promise((res) => {
+    dl._settle = (result) => { res(result) }
+  })
   activeDownloads.set(dlId, dl)
 
   // Save the thumbnail locally so completed downloads have a persistent poster.
@@ -3942,11 +4038,16 @@ function startManualYtDlp(dlId) {
         quality: dl.quality, format: dl.format,
         completedAt: new Date().toISOString(),
       })
+
+      const finish = () => { if (dl._settle) dl._settle({ id: dlId, ok: true, videoId: dl.videoId, filePath: dl.filePath }) }
+      if (dl.withLyrics) writeLyricsSidecar(dl).finally(finish)
+      else finish()
     } else {
       dl.status = 'failed'
       dl.error = `yt-dlp exited with code ${code}`
       console.error(`[Download] Failed (code ${code})`)
       sendToRenderer('download-progress', { id: dlId, status: 'failed', error: dl.error })
+      if (dl._settle) dl._settle({ id: dlId, ok: false, videoId: dl.videoId, error: dl.error })
     }
   })
 
@@ -3955,6 +4056,7 @@ function startManualYtDlp(dlId) {
     dl.error = err.message
     console.error(`[Download] Process error: ${err.message}`)
     sendToRenderer('download-progress', { id: dlId, status: 'failed', error: err.message })
+    if (dl._settle) dl._settle({ id: dlId, ok: false, videoId: dl.videoId, error: err.message })
   })
 }
 
@@ -3969,6 +4071,7 @@ function cancelDownload(downloadId) {
   if (dl.fileStream) dl.fileStream.end()
   try { if (dl.filePath && fs.existsSync(dl.filePath)) fs.unlinkSync(dl.filePath) } catch {}
   activeDownloads.delete(downloadId)
+  if (dl._settle) dl._settle({ id: downloadId, ok: false, cancelled: true, videoId: dl.videoId })
   return true
 }
 
@@ -4003,10 +4106,17 @@ function getCompletedDownloads() {
 
   try {
     const files = fs.readdirSync(DOWNLOADS_DIR)
+    const mediaExt = /\.(mp4|webm|mkv|mp3|m4a|aac|opus|ogg|flac|wav)$/i
     for (const f of files) {
       const fp = path.join(DOWNLOADS_DIR, f)
       const stat = fs.statSync(fp)
       if (stat.isFile()) {
+        // Lyric sidecars (.lrc/.txt written next to a downloaded track) are not
+        // downloads themselves; hide them from the list.
+        if (/\.(lrc|txt)$/i.test(f)) {
+          const stem = f.replace(/\.[^.]+$/, '')
+          if (files.some(x => x !== f && x.startsWith(stem + '.') && mediaExt.test(x))) continue
+        }
         const existsInActive = completed.some(c => c.fileName === f)
         if (!existsInActive && !activeDownloads.has(`fs_${f}`)) {
           // Recover the video id from yt-dlp filenames: "Title [ID].ext"
@@ -4025,6 +4135,52 @@ function getCompletedDownloads() {
   } catch {}
 
   return completed
+}
+
+// Download a whole playlist/album as audio, each track with a lyrics sidecar.
+// Tracks are processed a few at a time (yt-dlp already saturates the link on its
+// own); progress rides the normal per-track download events, and the batch ends
+// with a summary toast.
+let playlistBatchCounter = 0
+
+async function downloadPlaylist(tracks, { concurrency = 2 } = {}) {
+  const list = (Array.isArray(tracks) ? tracks : []).filter((t) => t && t.videoId)
+  const batchId = `pl_${++playlistBatchCounter}`
+  if (!list.length) return { batchId, total: 0, started: false }
+
+  const state = { total: list.length, completed: 0, failed: 0 }
+  let idx = 0
+
+  const worker = async () => {
+    while (idx < list.length) {
+      const t = list[idx++]
+      let dl = null
+      try {
+        const dlId = await startDownload(
+          t.videoId, 'audio', 'mp3', t.title || '', t.thumbnail || '', true,
+          { artist: t.artist || '', duration: t.duration || '', withLyrics: true },
+        )
+        dl = activeDownloads.get(dlId)
+        const res = dl && dl.done ? await dl.done : { ok: false }
+        if (res && res.ok) state.completed++
+        else state.failed++
+      } catch (e) {
+        console.error('[Download] playlist track failed:', e.message)
+        state.failed++
+      }
+    }
+  }
+
+  const n = Math.max(1, Math.min(concurrency, list.length))
+  Promise.all(Array.from({ length: n }, () => worker())).then(() => {
+    const msg = state.failed
+      ? `Playlist download finished: ${state.completed}/${state.total} saved, ${state.failed} failed`
+      : `Playlist download finished: ${state.completed} track${state.completed === 1 ? '' : 's'} saved with lyrics`
+    sendToRenderer('toast', { type: state.failed ? 'warning' : 'success', message: msg, duration: 6000 })
+    console.log(`[Download] Playlist ${batchId} — ${msg}`)
+  })
+
+  return { batchId, total: list.length, started: true }
 }
 
 // ─── Smart Download (Clipboard Watcher + yt-dlp) ─────────────────────────────
@@ -4957,9 +5113,14 @@ function setupIPC() {
   ipcMain.handle('prepare-playback', (_e, filePath) => prepareLocalPlayback(filePath))
 
   // Download pipeline IPC
-  ipcMain.handle('dl-start', async (_e, { videoId, quality, format, title, thumbnail, audio }) => {
+  ipcMain.handle('dl-start', async (_e, { videoId, quality, format, title, thumbnail, audio, artist, duration, withLyrics }) => {
     console.log('[IPC] dl-start:', videoId, quality, format, 'audio=', !!audio)
-    return startDownload(videoId, quality, format, title, thumbnail, audio)
+    return startDownload(videoId, quality, format, title, thumbnail, audio, { artist, duration, withLyrics })
+  })
+
+  ipcMain.handle('dl-playlist', async (_e, { tracks, concurrency } = {}) => {
+    console.log('[IPC] dl-playlist:', Array.isArray(tracks) ? tracks.length : 0, 'tracks')
+    return downloadPlaylist(tracks, { concurrency })
   })
 
   ipcMain.handle('dl-cancel', (_e, downloadId) => {
