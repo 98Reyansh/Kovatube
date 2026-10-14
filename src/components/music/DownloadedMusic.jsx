@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useQueue } from '../../context/QueueContext'
 import { useDownloads } from '../../context/DownloadContext'
 
@@ -12,6 +12,15 @@ function fmtDur(s) {
   const m = Math.floor(n / 60)
   const sec = Math.floor(n % 60)
   return `${m}:${String(sec).padStart(2, '0')}`
+}
+
+function LyricsBadge() {
+  return (
+    <span className="inline-flex items-center gap-0.5 shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-500 dark:text-purple-400">
+      <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="currentColor"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" /></svg>
+      lyrics
+    </span>
+  )
 }
 
 // A downloaded song. Plays through the app's music player like any other track
@@ -57,12 +66,7 @@ function DownloadedRow({ track, queue, index, sourceMeta }) {
         <p className={`text-sm truncate ${active ? 'text-yt-red font-medium' : 'font-medium'}`}>{track.title}</p>
         <p className="text-xs text-gray-500 dark:text-gray-400 truncate flex items-center gap-1.5">
           <span className="truncate">{meta || 'Downloaded'}</span>
-          {track.hasLyrics && (
-            <span className="inline-flex items-center gap-0.5 shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-500 dark:text-purple-400">
-              <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="currentColor"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" /></svg>
-              lyrics
-            </span>
-          )}
+          {track.hasLyrics && <LyricsBadge />}
         </p>
       </div>
 
@@ -96,15 +100,137 @@ function DownloadedRow({ track, queue, index, sourceMeta }) {
   )
 }
 
-export default function DownloadedMusic() {
-  const { completedDownloads, refreshCompleted } = useDownloads()
-  const { startQueue } = useQueue()
+// One downloaded playlist, collapsed to a single entry. Clicking opens its
+// ordered track list.
+function PlaylistRow({ playlist, onOpen }) {
+  const { formatBytes } = useDownloads()
+  const count = playlist.trackCount || 0
+  const meta = [
+    `${count} song${count === 1 ? '' : 's'}`,
+    playlist.artist,
+    playlist.totalBytes ? formatBytes(playlist.totalBytes) : '',
+  ].filter(Boolean).join(' • ')
 
-  // Pick up sidecars and audio flags written by the download pipeline.
+  const open = () => onOpen(playlist.id)
+
+  return (
+    <div
+      className="track-row group"
+      onClick={open}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() } }}
+    >
+      <div className="w-6 text-center shrink-0">
+        <svg viewBox="0 0 24 24" className="w-4 h-4 mx-auto text-purple-500 dark:text-purple-400" fill="currentColor">
+          <path d="M4 6h10v2H4V6zm0 4h10v2H4v-2zm0 4h7v2H4v-2zm12-9l4 2.5V18a2.5 2.5 0 11-2-2.45V8.28l-4-2.5L16 5z" />
+        </svg>
+      </div>
+
+      {playlist.thumbnail ? (
+        <img src={playlist.thumbnail} alt="" referrerPolicy="no-referrer" className="w-10 h-10 rounded-lg object-cover shrink-0" />
+      ) : (
+        <div className="w-10 h-10 rounded-lg bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center shrink-0">
+          <svg viewBox="0 0 24 24" className="w-5 h-5 text-purple-500 dark:text-purple-400" fill="currentColor"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" /></svg>
+        </div>
+      )}
+
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium truncate group-hover:text-yt-red dark:group-hover:text-yt-red-light transition-colors">{playlist.title}</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 truncate flex items-center gap-1.5">
+          <span className="truncate">{meta || 'Playlist'}</span>
+          {playlist.hasLyrics && <LyricsBadge />}
+        </p>
+      </div>
+
+      <span className="shrink-0 text-xs font-medium text-gray-400 group-hover:text-yt-red transition-colors">Open</span>
+      <svg viewBox="0 0 24 24" className="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 18l6-6-6-6" /></svg>
+    </div>
+  )
+}
+
+// The ordered track list for one downloaded playlist.
+function PlaylistDetail({ playlist, onBack }) {
+  const { startQueue } = useQueue()
+  const { formatBytes } = useDownloads()
+  const tracks = playlist.tracks || []
+  const sourceMeta = { title: playlist.title }
+  const count = tracks.length
+  const meta = [
+    `${count} song${count === 1 ? '' : 's'}`,
+    playlist.artist,
+    playlist.totalBytes ? formatBytes(playlist.totalBytes) : '',
+  ].filter(Boolean).join(' • ')
+
+  return (
+    <section className="animate-fade-in">
+      <button onClick={onBack} className="btn-ghost flex items-center gap-1.5 px-3 py-1.5 mb-4 text-sm text-gray-600 dark:text-gray-300">
+        <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        Downloaded
+      </button>
+
+      <div className="flex flex-col sm:flex-row gap-5 mb-6 items-center sm:items-end">
+        {playlist.thumbnail ? (
+          <img src={playlist.thumbnail} alt="" referrerPolicy="no-referrer" className="w-32 h-32 sm:w-40 sm:h-40 rounded-2xl object-cover shadow-xl" />
+        ) : (
+          <div className="w-32 h-32 sm:w-40 sm:h-40 rounded-2xl bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center shadow-xl">
+            <svg viewBox="0 0 24 24" className="w-16 h-16 text-purple-500 dark:text-purple-400" fill="currentColor"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" /></svg>
+          </div>
+        )}
+        <div className="flex-1 min-w-0 text-center sm:text-left">
+          <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Downloaded playlist</p>
+          <h1 className="text-2xl font-bold mb-1 break-words">{playlist.title}</h1>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">{meta}</p>
+          <div className="flex items-center gap-2 justify-center sm:justify-start">
+            <button
+              onClick={() => startQueue(tracks, 0, sourceMeta)}
+              disabled={!count}
+              className="btn-accent px-5 py-2 text-sm flex items-center gap-2 disabled:opacity-50"
+            >
+              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+              Play all
+            </button>
+            <button
+              onClick={() => startQueue([...tracks].sort(() => Math.random() - 0.5), 0, sourceMeta)}
+              disabled={!count}
+              className="btn-ghost px-4 py-2 text-sm flex items-center gap-2 text-gray-700 dark:text-gray-200 disabled:opacity-50"
+            >
+              <svg viewBox="0 0 24 24" className="w-4 h-4" fill="currentColor"><path d="M17 3h4v4h-2V6.414l-4.293 4.293-1.414-1.414L17.586 5H17V3zM3 5h4.586l3.707 3.707-1.414 1.414L6.586 7H3V5zm14 12h-2v-2h2v-.586l2-2V21h-4v-2h2v-.586l-4.293-4.293 1.414-1.414L17 15.414V17zM3 17h3.586l3.707-3.707 1.414 1.414L7.586 19H3v-2z" /></svg>
+              Shuffle
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-0.5">
+        {tracks.map((t, i) => (
+          <DownloadedRow key={t.id + '-' + i} track={t} queue={tracks} index={i} sourceMeta={sourceMeta} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+export default function DownloadedMusic() {
+  const { completedDownloads, playlists, refreshCompleted } = useDownloads()
+  const { startQueue } = useQueue()
+  const [selectedId, setSelectedId] = useState(null)
+
+  // Pick up sidecars and playlist records written by the download pipeline.
   useEffect(() => { refreshCompleted().catch(() => {}) }, [refreshCompleted])
 
-  const tracks = completedDownloads
+  // Files owned by a playlist are shown under that playlist, not as loose songs.
+  const playlistFiles = new Set()
+  for (const pl of playlists || []) {
+    for (const t of pl.tracks || []) {
+      if (t.fileName) playlistFiles.add(t.fileName)
+      if (t.filePath) playlistFiles.add(t.filePath)
+    }
+  }
+
+  const songs = completedDownloads
     .filter((d) => d.isAudio || AUDIO_RE.test(d.fileName || ''))
+    .filter((d) => !playlistFiles.has(d.fileName) && !playlistFiles.has(d.filePath))
     .map((d) => ({
       id: d.id || d.filePath,
       videoId: d.videoId || '',
@@ -119,9 +245,14 @@ export default function DownloadedMusic() {
       hasLyrics: !!d.hasLyrics,
     }))
 
-  const sourceMeta = { title: 'Downloaded' }
+  const lists = playlists || []
+  const selected = selectedId ? lists.find((p) => p.id === selectedId) : null
 
-  if (!tracks.length) {
+  if (selected) {
+    return <PlaylistDetail playlist={selected} onBack={() => setSelectedId(null)} />
+  }
+
+  if (!lists.length && !songs.length) {
     return (
       <div className="text-center py-16">
         <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-black/5 dark:bg-white/5 flex items-center justify-center animate-floaty">
@@ -135,32 +266,52 @@ export default function DownloadedMusic() {
     )
   }
 
+  const sourceMeta = { title: 'Downloaded' }
+
   return (
-    <section className="mb-7">
-      <div className="flex items-center justify-between mb-2 gap-3">
-        <h2 className="text-lg font-semibold truncate">
-          Downloaded music
-          <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">{tracks.length}</span>
-        </h2>
-        <div className="flex items-center gap-2 shrink-0">
-          <button onClick={() => startQueue(tracks, 0, sourceMeta)} className="btn-accent px-3.5 py-1.5 text-xs flex items-center gap-1.5">
-            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
-            Play all
-          </button>
-          <button
-            onClick={() => startQueue([...tracks].sort(() => Math.random() - 0.5), 0, sourceMeta)}
-            className="btn-ghost px-3 py-1.5 text-xs flex items-center gap-1.5 text-gray-600 dark:text-gray-300"
-          >
-            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="currentColor"><path d="M17 3h4v4h-2V6.414l-4.293 4.293-1.414-1.414L17.586 5H17V3zM3 5h4.586l3.707 3.707-1.414 1.414L6.586 7H3V5zm14 12h-2v-2h2v-.586l2-2V21h-4v-2h2v-.586l-4.293-4.293 1.414-1.414L17 15.414V17zM3 17h3.586l3.707-3.707 1.414 1.414L7.586 19H3v-2z" /></svg>
-            Shuffle
-          </button>
-        </div>
-      </div>
-      <div className="space-y-0.5">
-        {tracks.map((t, i) => (
-          <DownloadedRow key={t.id + '-' + i} track={t} queue={tracks} index={i} sourceMeta={sourceMeta} />
-        ))}
-      </div>
-    </section>
+    <>
+      {lists.length > 0 && (
+        <section className="mb-7">
+          <div className="flex items-center justify-between mb-2 gap-3">
+            <h2 className="text-lg font-semibold truncate">
+              Playlists
+              <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">{lists.length}</span>
+            </h2>
+          </div>
+          <div className="space-y-0.5">
+            {lists.map((pl) => <PlaylistRow key={pl.id} playlist={pl} onOpen={setSelectedId} />)}
+          </div>
+        </section>
+      )}
+
+      {songs.length > 0 && (
+        <section className="mb-7">
+          <div className="flex items-center justify-between mb-2 gap-3">
+            <h2 className="text-lg font-semibold truncate">
+              Songs
+              <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">{songs.length}</span>
+            </h2>
+            <div className="flex items-center gap-2 shrink-0">
+              <button onClick={() => startQueue(songs, 0, sourceMeta)} className="btn-accent px-3.5 py-1.5 text-xs flex items-center gap-1.5">
+                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                Play all
+              </button>
+              <button
+                onClick={() => startQueue([...songs].sort(() => Math.random() - 0.5), 0, sourceMeta)}
+                className="btn-ghost px-3 py-1.5 text-xs flex items-center gap-1.5 text-gray-600 dark:text-gray-300"
+              >
+                <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="currentColor"><path d="M17 3h4v4h-2V6.414l-4.293 4.293-1.414-1.414L17.586 5H17V3zM3 5h4.586l3.707 3.707-1.414 1.414L6.586 7H3V5zm14 12h-2v-2h2v-.586l2-2V21h-4v-2h2v-.586l-4.293-4.293 1.414-1.414L17 15.414V17zM3 17h3.586l3.707-3.707 1.414 1.414L7.586 19H3v-2z" /></svg>
+                Shuffle
+              </button>
+            </div>
+          </div>
+          <div className="space-y-0.5">
+            {songs.map((t, i) => (
+              <DownloadedRow key={t.id + '-' + i} track={t} queue={songs} index={i} sourceMeta={sourceMeta} />
+            ))}
+          </div>
+        </section>
+      )}
+    </>
   )
 }

@@ -33,6 +33,7 @@ export function DownloadProvider({ children }) {
   const toastHandledIds = useRef(new Set())
   const [activeDownloads, setActiveDownloads] = useState([])
   const [completedDownloads, setCompletedDownloads] = useState([])
+  const [playlists, setPlaylists] = useState([])
   const [hasHydrated, setHasHydrated] = useState(false)
 
   useEffect(() => {
@@ -42,6 +43,7 @@ export function DownloadProvider({ children }) {
       setHasHydrated(true)
     }).catch(() => setHasHydrated(true))
     window.electronAPI.dlCompleted().then(list => setCompletedDownloads(list)).catch(() => {})
+    window.electronAPI.dlPlaylists?.().then(list => setPlaylists(list || [])).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -157,16 +159,34 @@ export function DownloadProvider({ children }) {
     catch (e) { console.error('[DownloadContext] showInFolder failed:', e); return false }
   }, [])
 
+  const refreshPlaylists = useCallback(async () => {
+    if (!window.electronAPI?.dlPlaylists) return
+    try { setPlaylists(await window.electronAPI.dlPlaylists() || []) } catch {}
+  }, [])
+
   const refreshCompleted = useCallback(async () => {
     if (!window.electronAPI) return
-    const list = await window.electronAPI.dlCompleted()
+    const [list, pls] = await Promise.all([
+      window.electronAPI.dlCompleted(),
+      window.electronAPI.dlPlaylists ? window.electronAPI.dlPlaylists() : Promise.resolve([]),
+    ])
     setCompletedDownloads(list)
+    setPlaylists(pls || [])
   }, [])
+
+  // The main process tells us when a playlist record changes (a track landed or
+  // the group was created) so the Downloaded tab can update as it fills in.
+  useEffect(() => {
+    if (!window.electronAPI?.onPlaylistUpdate) return
+    const onUpdate = () => { refreshPlaylists() }
+    window.electronAPI.onPlaylistUpdate(onUpdate)
+    return () => { window.electronAPI.removePlaylistUpdateListeners?.() }
+  }, [refreshPlaylists])
 
   return (
     <DownloadContext.Provider value={{
-      activeDownloads, completedDownloads, hasHydrated,
-      startDownload, cancelDownload, playFile, showInFolder, refreshCompleted,
+      activeDownloads, completedDownloads, playlists, hasHydrated,
+      startDownload, cancelDownload, playFile, showInFolder, refreshCompleted, refreshPlaylists,
       formatBytes, formatSpeed, formatEta,
     }}>
       {children}

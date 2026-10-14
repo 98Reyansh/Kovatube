@@ -49,11 +49,19 @@ export default function MusicBrowse() {
   const downloadCount = tracks.filter(t => t.videoId && activeIds.has(t.videoId)).length
 
   // Download the whole list as MP3, each track bundled with its lyrics sidecar.
+  // The playlist itself is remembered (with its track order) so the Downloaded
+  // tab can show one entry instead of every song.
   const downloadAll = async () => {
     const list = tracks.filter(t => t.videoId)
     if (!list.length) return
     try {
       const res = await window.electronAPI?.dlPlaylist?.({
+        playlist: {
+          title: header?.title || 'Playlist',
+          artist: header?.artist || header?.subtitle || '',
+          thumbnail: header?.thumbnail || '',
+          browseId: decodeURIComponent(browseId),
+        },
         tracks: list.map(t => ({
           videoId: t.videoId, title: t.title, thumbnail: t.thumbnail,
           artist: t.artist, duration: t.duration,

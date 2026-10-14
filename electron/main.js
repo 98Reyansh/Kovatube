@@ -3141,6 +3141,112 @@ function musicFieldsFor(filePath, audio) {
   return { localUrl, isAudio, hasLyrics: !!lyricsSidecarFor(filePath) }
 }
 
+// ── Downloaded playlist records ──────────────────────────────────────────────
+// A playlist download is remembered as one ordered group (next to the songs it
+// produced on disk) so the Music → Downloaded tab can show the playlist itself
+// instead of a heap of loose tracks. Stored in the config dir, not the downloads
+// dir, so the downloads scan never picks it up as a file.
+const PLAYLISTS_PATH = path.join(CONFIG_DIR, 'playlists.json')
+
+function readPlaylists() {
+  try {
+    const list = JSON.parse(fs.readFileSync(PLAYLISTS_PATH, 'utf-8'))
+    return Array.isArray(list) ? list : []
+  } catch {
+    return []
+  }
+}
+
+function writePlaylists(list) {
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true })
+    fs.writeFileSync(PLAYLISTS_PATH, JSON.stringify(list, null, 2), 'utf-8')
+  } catch (e) {
+    console.error('[Playlist] save failed:', e.message)
+  }
+}
+
+// Stable id for a playlist: prefer the YouTube browse id so re-downloading the
+// same playlist updates one entry instead of piling up duplicates.
+function playlistIdFor(meta) {
+  const browseId = meta && meta.browseId
+  if (browseId) return `pl_${browseId}`
+  const title = (meta && meta.title) || 'playlist'
+  const slug = String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60)
+  return `pl_${slug || 'playlist'}`
+}
+
+function upsertPlaylist(record) {
+  const list = readPlaylists()
+  const i = list.findIndex((p) => p.id === record.id)
+  const now = new Date().toISOString()
+  if (i >= 0) list[i] = { ...list[i], ...record, createdAt: list[i].createdAt || record.createdAt, updatedAt: now }
+  else list.push({ ...record, updatedAt: now })
+  writePlaylists(list)
+}
+
+// Patch one ordered slot of a saved playlist (matched by its order index, so
+// duplicate video ids can't collide) and let the renderer know it changed.
+function updatePlaylistTrack(playlistId, order, patch) {
+  const list = readPlaylists()
+  const pl = list.find((p) => p.id === playlistId)
+  if (!pl) return
+  const track = (pl.tracks || []).find((t) => t.order === order)
+  if (track) Object.assign(track, patch)
+  pl.updatedAt = new Date().toISOString()
+  writePlaylists(list)
+  sendToRenderer('playlist-update', { id: pl.id })
+}
+
+// Saved playlists with each track's on-disk presence resolved and playback
+// fields filled in. Slots whose file is gone are dropped; playlists left with
+// no tracks are omitted entirely. Tracks always come back in playlist order.
+function getDownloadedPlaylists() {
+  const out = []
+  for (const pl of readPlaylists()) {
+    const tracks = (Array.isArray(pl.tracks) ? pl.tracks : [])
+      .slice()
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      .map((t) => {
+        const fp = t.filePath && fs.existsSync(t.filePath) ? t.filePath : ''
+        if (!fp) return null
+        let size = 0
+        try { size = fs.statSync(fp).size } catch {}
+        return {
+          id: `${pl.id}:${t.order}`,
+          videoId: t.videoId || '',
+          title: t.title || t.fileName || 'Unknown track',
+          artist: t.artist || '',
+          duration: t.duration || '',
+          thumbnail: t.thumbnail || '',
+          fileName: t.fileName || path.basename(fp),
+          filePath: fp,
+          totalBytes: size,
+          format: path.extname(fp),
+          ...musicFieldsFor(fp, true),
+        }
+      })
+      .filter(Boolean)
+    if (!tracks.length) continue
+    const totalBytes = tracks.reduce((s, t) => s + (t.totalBytes || 0), 0)
+    out.push({
+      id: pl.id,
+      title: pl.title || 'Playlist',
+      artist: pl.artist || '',
+      thumbnail: pl.thumbnail || tracks[0].thumbnail || '',
+      browseId: pl.browseId || '',
+      createdAt: pl.createdAt || '',
+      updatedAt: pl.updatedAt || '',
+      trackCount: tracks.length,
+      totalBytes,
+      hasLyrics: tracks.some((t) => t.hasLyrics),
+      tracks,
+    })
+  }
+  out.sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
+  return out
+}
+
 // ── Signed-in library (reuses the app's hidden authed window) ───────────────
 
 let musicAuthedWin = null
@@ -4234,30 +4340,63 @@ function getCompletedDownloads() {
 // with a summary toast.
 let playlistBatchCounter = 0
 
-async function downloadPlaylist(tracks, { concurrency = 2 } = {}) {
+async function downloadPlaylist({ playlist, tracks, concurrency = 2 } = {}) {
   const list = (Array.isArray(tracks) ? tracks : []).filter((t) => t && t.videoId)
   const batchId = `pl_${++playlistBatchCounter}`
   if (!list.length) return { batchId, total: 0, started: false }
+
+  // Register the playlist up front, with every track in its original order, so
+  // it appears in the Downloaded tab right away and fills in as songs land.
+  const meta = playlist || {}
+  const playlistId = playlistIdFor(meta)
+  upsertPlaylist({
+    id: playlistId,
+    title: meta.title || 'Playlist',
+    artist: meta.artist || '',
+    thumbnail: meta.thumbnail || '',
+    browseId: meta.browseId || '',
+    createdAt: new Date().toISOString(),
+    tracks: list.map((t, i) => ({
+      videoId: t.videoId,
+      title: t.title || '',
+      artist: t.artist || '',
+      duration: t.duration || '',
+      thumbnail: t.thumbnail || '',
+      order: i,
+      status: 'pending',
+      fileName: '',
+      filePath: '',
+    })),
+  })
+  sendToRenderer('playlist-update', { id: playlistId })
 
   const state = { total: list.length, completed: 0, failed: 0 }
   let idx = 0
 
   const worker = async () => {
     while (idx < list.length) {
-      const t = list[idx++]
-      let dl = null
+      const i = idx++
+      const t = list[i]
       try {
         const dlId = await startDownload(
           t.videoId, 'audio', 'mp3', t.title || '', t.thumbnail || '', true,
           { artist: t.artist || '', duration: t.duration || '', withLyrics: true },
         )
-        dl = activeDownloads.get(dlId)
+        const dl = activeDownloads.get(dlId)
         const res = dl && dl.done ? await dl.done : { ok: false }
-        if (res && res.ok) state.completed++
-        else state.failed++
+        if (res && res.ok) {
+          state.completed++
+          const filePath = res.filePath || (dl && dl.filePath) || ''
+          const fileName = filePath ? path.basename(filePath) : (dl && dl.fileName) || ''
+          updatePlaylistTrack(playlistId, i, { fileName, filePath, status: 'done' })
+        } else {
+          state.failed++
+          updatePlaylistTrack(playlistId, i, { status: 'failed' })
+        }
       } catch (e) {
         console.error('[Download] playlist track failed:', e.message)
         state.failed++
+        updatePlaylistTrack(playlistId, i, { status: 'failed' })
       }
     }
   }
@@ -4271,7 +4410,7 @@ async function downloadPlaylist(tracks, { concurrency = 2 } = {}) {
     console.log(`[Download] Playlist ${batchId} — ${msg}`)
   })
 
-  return { batchId, total: list.length, started: true }
+  return { batchId, total: list.length, started: true, playlistId }
 }
 
 // ─── Smart Download (Clipboard Watcher + yt-dlp) ─────────────────────────────
@@ -5233,10 +5372,12 @@ function setupIPC() {
     return startDownload(videoId, quality, format, title, thumbnail, audio, { artist, duration, withLyrics })
   })
 
-  ipcMain.handle('dl-playlist', async (_e, { tracks, concurrency } = {}) => {
-    console.log('[IPC] dl-playlist:', Array.isArray(tracks) ? tracks.length : 0, 'tracks')
-    return downloadPlaylist(tracks, { concurrency })
+  ipcMain.handle('dl-playlist', async (_e, { playlist, tracks, concurrency } = {}) => {
+    console.log('[IPC] dl-playlist:', Array.isArray(tracks) ? tracks.length : 0, 'tracks', playlist?.title || '')
+    return downloadPlaylist({ playlist, tracks, concurrency })
   })
+
+  ipcMain.handle('dl-playlists', () => getDownloadedPlaylists())
 
   ipcMain.handle('dl-cancel', (_e, downloadId) => {
     console.log('[IPC] dl-cancel:', downloadId)
