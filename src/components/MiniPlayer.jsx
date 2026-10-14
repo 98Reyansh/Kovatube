@@ -56,7 +56,7 @@ const WORD_LEAD = 0.02
 // only when the active line or the number of sung words actually changes.
 // `offset` (seconds) shifts the lyrics later (+) or earlier (−) to line them up
 // with a recording whose intro differs from the lyric source.
-function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, ambient = false }) {
+function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, ambient = false, onSeek }) {
   const boxRef = useRef(null)
   const activeRef = useRef(null)
   const nowRef = useRef(null)
@@ -118,6 +118,15 @@ function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, a
 
   const activeIdx = mark.line
 
+  // Click-to-seek: jumping to a lyric line plays the song from that point.
+  // Lyric times are source times, so add the user's offset to land on the
+  // matching audio position (the inverse of how the highlight is computed).
+  const canSeek = typeof onSeek === 'function'
+  const goTo = useCallback((t) => {
+    if (!canSeek || !isFinite(t)) return
+    onSeek(Math.max(0, t + offset))
+  }, [canSeek, onSeek, offset])
+
   useEffect(() => {
     const box = boxRef.current
     const el = activeRef.current
@@ -142,7 +151,12 @@ function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, a
           // wipe); other lines render as plain text.
           if (i === activeIdx && words && words.length) {
             return (
-              <p key={i} ref={activeRef} className={`lrc-line lrc-line-active ${lineCls}`}>
+              <p
+                key={i}
+                ref={activeRef}
+                onClick={canSeek ? () => goTo(line.t) : undefined}
+                className={`lrc-line lrc-line-active ${lineCls}${canSeek ? ' lrc-clickable' : ''}`}
+              >
                 {words.map((wd, j) => {
                   const on = j < mark.words
                   const isNow = j === mark.words - 1
@@ -153,7 +167,8 @@ function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, a
                     <span key={j}>
                       <span
                         ref={isNow ? nowRef : null}
-                        className={`lrc-word${on ? ' lrc-word-on' : ''}${isNow ? ' lrc-word-now' : ''}${wd.bg ? ' lrc-word-bg' : ''}`}
+                        onClick={canSeek ? (e) => { e.stopPropagation(); goTo(wd.t) } : undefined}
+                        className={`lrc-word${on ? ' lrc-word-on' : ''}${isNow ? ' lrc-word-now' : ''}${wd.bg ? ' lrc-word-bg' : ''}${canSeek ? ' lrc-clickable-word' : ''}`}
                       >{wd.w}</span>
                       {sep}
                     </span>
@@ -163,7 +178,12 @@ function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, a
             )
           }
           return (
-            <p key={i} ref={i === activeIdx ? activeRef : null} className={`lrc-line lrc-line-${state} ${lineCls}`}>
+            <p
+              key={i}
+              ref={i === activeIdx ? activeRef : null}
+              onClick={canSeek ? () => goTo(line.t) : undefined}
+              className={`lrc-line lrc-line-${state} ${lineCls}${canSeek ? ' lrc-clickable' : ''}`}
+            >
               {line.text || '\u00A0'}
             </p>
           )
@@ -358,6 +378,7 @@ export default function MiniPlayer() {
                   currentTime={currentTime}
                   getTime={getAudioTime}
                   offset={lyricOffset}
+                  onSeek={seek}
                 />
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-center gap-2 text-white/50">
@@ -455,6 +476,7 @@ export default function MiniPlayer() {
                 currentTime={currentTime}
                 getTime={getAudioTime}
                 offset={lyricOffset}
+                onSeek={seek}
               />
             ) : (
               <div className="w-full h-56 rounded-2xl bg-black/[0.03] dark:bg-white/[0.05] border border-black/5 dark:border-white/10 flex flex-col items-center justify-center text-center gap-1">

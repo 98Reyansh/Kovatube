@@ -725,6 +725,14 @@ html.dark .lrc-line-active .lrc-word-now,
 /* Background vocals ("(ooh)", "(You)") read as a lighter echo of the lead. */
 .lrc-word-bg { font-size: 0.9em; opacity: 0.78; }
 
+/* Click-to-seek affordance: every timed line is a jump target, and words on the
+   active line can be clicked individually to land mid-line. */
+.lrc-clickable { cursor: pointer; border-radius: 8px; transition: background-color 140ms ease; }
+.lrc-clickable:hover { background-color: rgb(0 0 0 / 0.045); }
+html.dark .lrc-clickable:hover { background-color: rgb(255 255 255 / 0.06); }
+.lrc-ambient .lrc-clickable:hover { background-color: rgb(255 255 255 / 0.1); }
+.lrc-clickable-word { cursor: pointer; }
+
 /* Ambient mode sits on a dark blurred backdrop regardless of theme, so force
    light text there instead of the theme-driven colours above. */
 .lrc-ambient .lrc-line-future { color: rgb(255 255 255 / 0.5); }
