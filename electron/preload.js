@@ -67,13 +67,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   dlActive: () => ipcRenderer.invoke('dl-active'),
   dlCompleted: () => ipcRenderer.invoke('dl-completed'),
   dlPlaylists: () => ipcRenderer.invoke('dl-playlists'),
+  dlPlaylistAutoSync: (id, enabled) => ipcRenderer.invoke('dl-playlist-autosync', { id, enabled }),
+  dlPlaylistSync: (id) => ipcRenderer.invoke('dl-playlist-sync', id),
+  dlSyncAll: () => ipcRenderer.invoke('dl-sync-all'),
   dlPlay: (filePath) => ipcRenderer.invoke('dl-play', filePath),
   dlShowInFolder: (filePath) => ipcRenderer.invoke('dl-show-in-folder', filePath),
   onDownloadProgress: (cb) => { ipcRenderer.on('download-progress', (_e, data) => cb(data)) },
   onDownloadComplete: (cb) => { ipcRenderer.on('download-complete', (_e, data) => cb(data)) },
   onPlaylistUpdate: (cb) => { ipcRenderer.on('playlist-update', (_e, data) => cb(data)) },
+  onPlaylistSync: (cb) => { ipcRenderer.on('playlist-sync', (_e, data) => cb(data)) },
   removeDownloadListeners: () => { ipcRenderer.removeAllListeners('download-progress'); ipcRenderer.removeAllListeners('download-complete') },
   removePlaylistUpdateListeners: () => { ipcRenderer.removeAllListeners('playlist-update') },
+  removePlaylistSyncListeners: () => { ipcRenderer.removeAllListeners('playlist-sync') },
 
   // Smart Download pipeline
   smartDlToggle: (enabled) => ipcRenderer.invoke('smart-dl-toggle', enabled),

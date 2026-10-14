@@ -3148,6 +3148,10 @@ function musicFieldsFor(filePath, audio) {
 // dir, so the downloads scan never picks it up as a file.
 const PLAYLISTS_PATH = path.join(CONFIG_DIR, 'playlists.json')
 
+// Playlist ids with a sync in flight, so two syncs never overlap and the UI can
+// show a spinner. Runtime-only.
+const playlistSyncs = new Map()
+
 function readPlaylists() {
   try {
     const list = JSON.parse(fs.readFileSync(PLAYLISTS_PATH, 'utf-8'))
@@ -3198,6 +3202,21 @@ function updatePlaylistTrack(playlistId, order, patch) {
   sendToRenderer('playlist-update', { id: pl.id })
 }
 
+// Patch fields on a whole playlist record (the auto-sync switch, the last-sync
+// stamp, or the track list after a sync). `touch` controls whether this counts
+// as a content change: a routine "checked, nothing new" stamp must not reorder
+// the Downloaded tab, but adding songs should.
+function patchPlaylist(playlistId, patch, { touch = true } = {}) {
+  const list = readPlaylists()
+  const pl = list.find((p) => p.id === playlistId)
+  if (!pl) return false
+  Object.assign(pl, patch)
+  if (touch) pl.updatedAt = new Date().toISOString()
+  writePlaylists(list)
+  sendToRenderer('playlist-update', { id: playlistId })
+  return true
+}
+
 // Saved playlists with each track's on-disk presence resolved and playback
 // fields filled in. Slots whose file is gone are dropped; playlists left with
 // no tracks are omitted entirely. Tracks always come back in playlist order.
@@ -3237,6 +3256,11 @@ function getDownloadedPlaylists() {
       browseId: pl.browseId || '',
       createdAt: pl.createdAt || '',
       updatedAt: pl.updatedAt || '',
+      // Auto-download new songs added to the playlist. Defaults on; old records
+      // predate the flag and are treated as watched.
+      autoSync: pl.autoSync !== false,
+      lastSyncAt: pl.lastSyncAt || '',
+      syncing: playlistSyncs.has(pl.id),
       trackCount: tracks.length,
       totalBytes,
       hasLyrics: tracks.some((t) => t.hasLyrics),
@@ -4349,7 +4373,7 @@ async function downloadPlaylist({ playlist, tracks, concurrency = 2 } = {}) {
   // it appears in the Downloaded tab right away and fills in as songs land.
   const meta = playlist || {}
   const playlistId = playlistIdFor(meta)
-  upsertPlaylist({
+  const record = {
     id: playlistId,
     title: meta.title || 'Playlist',
     artist: meta.artist || '',
@@ -4367,16 +4391,36 @@ async function downloadPlaylist({ playlist, tracks, concurrency = 2 } = {}) {
       fileName: '',
       filePath: '',
     })),
-  })
+  }
+  // Only a brand-new playlist gets the auto-sync default; re-downloading one the
+  // user switched off must not silently turn it back on (upsert merges, so the
+  // existing flag survives when we omit it here).
+  if (!readPlaylists().some((p) => p.id === playlistId)) record.autoSync = true
+  upsertPlaylist(record)
   sendToRenderer('playlist-update', { id: playlistId })
 
+  downloadPlaylistTracks(playlistId, list.map((t, i) => ({ ...t, order: i })), { concurrency }).then((state) => {
+    const msg = state.failed
+      ? `Playlist download finished: ${state.completed}/${state.total} saved, ${state.failed} failed`
+      : `Playlist download finished: ${state.completed} track${state.completed === 1 ? '' : 's'} saved with lyrics`
+    sendToRenderer('toast', { type: state.failed ? 'warning' : 'success', message: msg, duration: 6000 })
+    console.log(`[Download] Playlist ${batchId} — ${msg}`)
+  })
+
+  return { batchId, total: list.length, started: true, playlistId }
+}
+
+// Download a set of ordered tracks into an already-registered playlist, a few at
+// a time; each track is matched back to its saved slot by its order index.
+// Shared by the manual "Download this playlist" action and by auto-sync.
+async function downloadPlaylistTracks(playlistId, items, { concurrency = 2 } = {}) {
+  const list = (Array.isArray(items) ? items : []).filter((t) => t && t.videoId)
   const state = { total: list.length, completed: 0, failed: 0 }
   let idx = 0
 
   const worker = async () => {
     while (idx < list.length) {
-      const i = idx++
-      const t = list[i]
+      const t = list[idx++]
       try {
         const dlId = await startDownload(
           t.videoId, 'audio', 'mp3', t.title || '', t.thumbnail || '', true,
@@ -4388,29 +4432,209 @@ async function downloadPlaylist({ playlist, tracks, concurrency = 2 } = {}) {
           state.completed++
           const filePath = res.filePath || (dl && dl.filePath) || ''
           const fileName = filePath ? path.basename(filePath) : (dl && dl.fileName) || ''
-          updatePlaylistTrack(playlistId, i, { fileName, filePath, status: 'done' })
+          updatePlaylistTrack(playlistId, t.order, { fileName, filePath, status: 'done' })
         } else {
           state.failed++
-          updatePlaylistTrack(playlistId, i, { status: 'failed' })
+          updatePlaylistTrack(playlistId, t.order, { status: 'failed' })
         }
       } catch (e) {
         console.error('[Download] playlist track failed:', e.message)
         state.failed++
-        updatePlaylistTrack(playlistId, i, { status: 'failed' })
+        updatePlaylistTrack(playlistId, t.order, { status: 'failed' })
       }
     }
   }
 
   const n = Math.max(1, Math.min(concurrency, list.length))
-  Promise.all(Array.from({ length: n }, () => worker())).then(() => {
-    const msg = state.failed
-      ? `Playlist download finished: ${state.completed}/${state.total} saved, ${state.failed} failed`
-      : `Playlist download finished: ${state.completed} track${state.completed === 1 ? '' : 's'} saved with lyrics`
-    sendToRenderer('toast', { type: state.failed ? 'warning' : 'success', message: msg, duration: 6000 })
-    console.log(`[Download] Playlist ${batchId} — ${msg}`)
+  await Promise.all(Array.from({ length: n }, () => worker()))
+  return state
+}
+
+// ─── Playlist auto-sync ──────────────────────────────────────────────────────
+// Downloaded playlists are "watched": every so often we re-fetch the playlist
+// from YouTube Music and download any songs that were added since the last look.
+// We never delete — songs removed from the playlist keep their downloaded file —
+// and songs whose download previously failed (or whose file vanished) are
+// retried. Runs at startup and on a timer, plus on demand from the UI.
+
+const SYNC_INTERVAL_MS = 15 * 60 * 1000
+let playlistSyncTimer = null
+
+// Reject if a promise doesn't settle in time (the signed-in fetch runs inside a
+// hidden window and has no timeout of its own).
+function withTimeout(promise, ms, label) {
+  let timer = null
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => { if (timer) clearTimeout(timer) })
+}
+
+// Fetch every track of a playlist, following continuations. Prefers the signed-in
+// page so private/own playlists work, falling back to the public endpoint.
+async function fetchPlaylistTracks(browseId) {
+  if (!browseId) return null
+  const post = async (body) => {
+    if (musicSignedIn()) {
+      const j = await authedMusicBrowse(body)
+      if (j) return j
+    }
+    return musicPost('browse', body)
+  }
+  const first = await post({ browseId })
+  if (!first) return null
+  const head = musicBrowseResult(first)
+  const all = [...head.tracks]
+  let continuation = head.continuation
+  let guard = 0
+  while (continuation && guard++ < 50) {
+    const j = await post({ continuation })
+    if (!j) break
+    const res = musicBrowseResult(j)
+    if (!res.tracks.length) break
+    all.push(...res.tracks)
+    if (!res.continuation || res.continuation === continuation) break
+    continuation = res.continuation
+  }
+  const seen = new Set()
+  const tracks = all.filter((t) => t.videoId && !seen.has(t.videoId) && seen.add(t.videoId))
+  return { header: head.header, tracks }
+}
+
+// Reconcile the tracks we already saved with the playlist as it is live now:
+// append songs that are new (in playlist order), backfill display metadata that
+// older records lack, and pick the slots that still need a file (brand-new
+// songs, earlier failures, or files deleted from disk). Nothing is ever removed
+// — a song taken off the playlist keeps its downloaded file. Pure, so it can be
+// reasoned about (and tested) on its own.
+function reconcilePlaylistTracks({ existing = [], fetched = [], inFlight = new Set(), fileExists = () => false } = {}) {
+  const tracks = (Array.isArray(existing) ? existing : []).map((t) => ({ ...t }))
+  const known = new Set(tracks.map((t) => t.videoId).filter(Boolean))
+  const fresh = (Array.isArray(fetched) ? fetched : []).filter((f) => f && f.videoId)
+  const freshByVideo = new Map(fresh.map((f) => [f.videoId, f]))
+  let dirty = false
+
+  // Backfill metadata (titles/artists can be filled in after the fact).
+  for (const t of tracks) {
+    const f = freshByVideo.get(t.videoId)
+    if (!f) continue
+    for (const k of ['title', 'artist', 'duration', 'thumbnail']) {
+      if (!t[k] && f[k]) { t[k] = f[k]; dirty = true }
+    }
+  }
+
+  // Songs present now but never recorded before, appended after what we have in
+  // the order the playlist lists them.
+  let maxOrder = tracks.reduce((m, t) => Math.max(m, typeof t.order === 'number' ? t.order : -1), -1)
+  let added = 0
+  for (const f of fresh) {
+    if (known.has(f.videoId)) continue
+    known.add(f.videoId)
+    tracks.push({
+      videoId: f.videoId,
+      title: f.title || '',
+      artist: f.artist || '',
+      duration: f.duration || '',
+      thumbnail: f.thumbnail || '',
+      order: ++maxOrder,
+      status: 'pending',
+      fileName: '',
+      filePath: '',
+    })
+    added++
+    dirty = true
+  }
+
+  // Slots needing a download: no file on disk, and not already downloading.
+  const queue = tracks
+    .filter((t) => {
+      if (t.filePath && fileExists(t.filePath)) return false
+      return !inFlight.has(t.videoId)
+    })
+    .map((t) => ({ ...t }))
+
+  return { tracks, added, queue, dirty }
+}
+
+// Reconcile one saved playlist with its live YouTube Music version.
+async function runPlaylistSync(playlistId, { force = false } = {}) {
+  const pl = readPlaylists().find((p) => p.id === playlistId)
+  if (!pl) return { ok: false, reason: 'missing' }
+  if (!pl.browseId) return { ok: false, reason: 'no-browse-id' }
+  if (!force && pl.autoSync === false) return { ok: false, reason: 'disabled' }
+  if (ytdlpAvailable === false) return { ok: false, reason: 'no-ytdlp' }
+  try {
+    if (net && typeof net.isOnline === 'function' && !net.isOnline()) return { ok: false, reason: 'offline' }
+  } catch { /* ignore */ }
+
+  let fetched = null
+  try {
+    fetched = await withTimeout(fetchPlaylistTracks(pl.browseId), 45000, 'playlist fetch')
+  } catch (e) {
+    console.error(`[PlaylistSync] fetch failed for ${playlistId}:`, e.message)
+    return { ok: false, reason: 'fetch-failed', error: e.message }
+  }
+  if (!fetched || !fetched.tracks.length) return { ok: false, reason: 'no-tracks' }
+
+  const inFlight = new Set([...activeDownloads.values()].map((d) => d.videoId))
+  const { tracks, added, queue, dirty } = reconcilePlaylistTracks({
+    existing: pl.tracks,
+    fetched: fetched.tracks,
+    inFlight,
+    fileExists: (p) => fs.existsSync(p),
   })
 
-  return { batchId, total: list.length, started: true, playlistId }
+  if (dirty) patchPlaylist(playlistId, { tracks })
+
+  if (!queue.length) {
+    patchPlaylist(playlistId, { lastSyncAt: new Date().toISOString() }, { touch: false })
+    return { ok: true, added: 0, downloaded: 0, total: fetched.tracks.length }
+  }
+
+  sendToRenderer('playlist-sync', { id: playlistId, status: 'started', pending: queue.length, added })
+  const state = await downloadPlaylistTracks(playlistId, queue, { concurrency: 2 })
+  patchPlaylist(playlistId, { lastSyncAt: new Date().toISOString() }, { touch: false })
+
+  if (added > 0) {
+    const base = `${added} new song${added === 1 ? '' : 's'} added to “${pl.title}”`
+    const msg = state.failed ? `${base} (${state.failed} failed)` : base
+    sendToRenderer('toast', { type: state.failed ? 'warning' : 'success', message: msg, duration: 6000 })
+  }
+  console.log(`[PlaylistSync] ${pl.title}: +${added} new, ${state.completed} downloaded, ${state.failed} failed`)
+  sendToRenderer('playlist-sync', { id: playlistId, status: 'done', added, failed: state.failed })
+  return { ok: true, added, downloaded: state.completed, failed: state.failed, total: fetched.tracks.length }
+}
+
+function syncPlaylist(playlistId, opts = {}) {
+  if (!playlistId) return Promise.resolve({ ok: false, reason: 'missing' })
+  if (playlistSyncs.has(playlistId)) return playlistSyncs.get(playlistId)
+  const p = runPlaylistSync(playlistId, opts).finally(() => { playlistSyncs.delete(playlistId) })
+  playlistSyncs.set(playlistId, p)
+  return p
+}
+
+// Check every watched playlist, one after another so a big backfill can't storm
+// the network. The background sweep waits for other downloads to finish; a
+// user-pressed "Sync all" runs regardless.
+async function syncAllPlaylists({ force = false, background = false } = {}) {
+  if (background && activeDownloads.size > 0) return { ok: true, skipped: 'busy', count: 0, results: [] }
+  const ids = readPlaylists()
+    .filter((p) => p.browseId && (force || p.autoSync !== false))
+    .map((p) => p.id)
+  const results = []
+  for (const id of ids) {
+    try { results.push({ id, ...(await syncPlaylist(id, { force })) }) }
+    catch (e) { results.push({ id, ok: false, error: e.message }) }
+  }
+  return { ok: true, count: ids.length, results }
+}
+
+function startPlaylistSyncScheduler() {
+  if (playlistSyncTimer) return
+  // Give startup (auth cookie harvest, window load) a moment to settle first.
+  setTimeout(() => { syncAllPlaylists({ background: true }).catch(() => {}) }, 20 * 1000)
+  playlistSyncTimer = setInterval(() => { syncAllPlaylists({ background: true }).catch(() => {}) }, SYNC_INTERVAL_MS)
+  if (playlistSyncTimer.unref) playlistSyncTimer.unref()
 }
 
 // ─── Smart Download (Clipboard Watcher + yt-dlp) ─────────────────────────────
@@ -5379,6 +5603,26 @@ function setupIPC() {
 
   ipcMain.handle('dl-playlists', () => getDownloadedPlaylists())
 
+  // Turn auto-download of newly added songs on/off for one saved playlist.
+  ipcMain.handle('dl-playlist-autosync', (_e, { id, enabled } = {}) => {
+    if (!id) return false
+    console.log('[IPC] dl-playlist-autosync:', id, enabled)
+    return patchPlaylist(id, { autoSync: !!enabled })
+  })
+
+  // Check one playlist for new songs right now (works even when auto-sync is off).
+  ipcMain.handle('dl-playlist-sync', async (_e, id) => {
+    console.log('[IPC] dl-playlist-sync:', id)
+    try { return await syncPlaylist(id, { force: true }) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+
+  ipcMain.handle('dl-sync-all', async () => {
+    console.log('[IPC] dl-sync-all')
+    try { return await syncAllPlaylists() }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+
   ipcMain.handle('dl-cancel', (_e, downloadId) => {
     console.log('[IPC] dl-cancel:', downloadId)
     return cancelDownload(downloadId)
@@ -5479,6 +5723,7 @@ app.whenReady().then(async () => {
   setupIPC()
   try { await startStaticServer() } catch (e) { console.error('[App] static server failed', e.message) }
   createWindow()
+  startPlaylistSyncScheduler()
   const ytdlpOk = await checkYtdlpBinary()
   if (ytdlpOk) {
     const ver = await checkYtdlpVersion()
@@ -5497,6 +5742,7 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => { stopClipboardWatcher(); if (process.platform !== 'darwin') app.quit() })
 app.on('before-quit', () => {
   stopClipboardWatcher()
+  if (playlistSyncTimer) clearInterval(playlistSyncTimer)
   destroyMusicAuthedWindow()
   streamProcesses.forEach((entry) => { if (entry.ffmpeg && !entry.ffmpeg.killed) entry.ffmpeg.kill('SIGKILL') })
   smartDownloads.forEach((dl) => { if (dl.process && !dl.process.killed) dl.process.kill('SIGTERM') })

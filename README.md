@@ -74,6 +74,8 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 
 ### Downloads & offline
 - **Download** videos/audio, with a fast InnerTube path and a `yt-dlp` fallback.
+- **Playlist & album downloads** — each song saved as MP3 with its lyrics alongside; the playlist shows up as one entry with its songs in order.
+- **Auto-sync playlists** — songs you add to a downloaded playlist later are fetched and downloaded automatically (checked at launch and every 15 minutes, or on demand with **Sync now**). Toggle it per playlist.
 - **Smart Download** — optionally auto-grab videos from your For You recommendations.
 - **Offline playback** of downloaded media.
 

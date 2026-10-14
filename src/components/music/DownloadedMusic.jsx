@@ -14,6 +14,56 @@ function fmtDur(s) {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
+// "just now", "5m ago", "3h ago", "2d ago"
+function fmtWhen(iso) {
+  if (!iso) return ''
+  const t = Date.parse(iso)
+  if (!isFinite(t)) return ''
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000))
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
+}
+
+// Small spinning ring used while a playlist is being checked/downloaded.
+function Spinner({ className = 'w-4 h-4' }) {
+  return (
+    <svg viewBox="0 0 24 24" className={`${className} animate-spin`} fill="none">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
+      <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function SyncBadge() {
+  return (
+    <span className="inline-flex items-center gap-0.5 shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+      <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="2.5">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M20 9a8 8 0 00-14.9-2.3M4 15a8 8 0 0014.9 2.3" />
+      </svg>
+      auto
+    </span>
+  )
+}
+
+// iOS-style switch for the per-playlist auto-download setting.
+function Toggle({ checked, onChange, disabled }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={onChange}
+      className={`relative w-9 h-5 rounded-full transition-colors shrink-0 disabled:opacity-50 ${checked ? 'bg-yt-red' : 'bg-gray-300 dark:bg-gray-600'}`}
+    >
+      <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : ''}`} />
+    </button>
+  )
+}
+
 function LyricsBadge() {
   return (
     <span className="inline-flex items-center gap-0.5 shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-500 dark:text-purple-400">
@@ -103,8 +153,9 @@ function DownloadedRow({ track, queue, index, sourceMeta }) {
 // One downloaded playlist, collapsed to a single entry. Clicking opens its
 // ordered track list.
 function PlaylistRow({ playlist, onOpen }) {
-  const { formatBytes } = useDownloads()
+  const { formatBytes, syncingPlaylists } = useDownloads()
   const count = playlist.trackCount || 0
+  const syncing = playlist.syncing || syncingPlaylists.includes(playlist.id)
   const meta = [
     `${count} song${count === 1 ? '' : 's'}`,
     playlist.artist,
@@ -122,9 +173,13 @@ function PlaylistRow({ playlist, onOpen }) {
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() } }}
     >
       <div className="w-6 text-center shrink-0">
-        <svg viewBox="0 0 24 24" className="w-4 h-4 mx-auto text-purple-500 dark:text-purple-400" fill="currentColor">
-          <path d="M4 6h10v2H4V6zm0 4h10v2H4v-2zm0 4h7v2H4v-2zm12-9l4 2.5V18a2.5 2.5 0 11-2-2.45V8.28l-4-2.5L16 5z" />
-        </svg>
+        {syncing ? (
+          <Spinner className="w-4 h-4 mx-auto text-yt-red" />
+        ) : (
+          <svg viewBox="0 0 24 24" className="w-4 h-4 mx-auto text-purple-500 dark:text-purple-400" fill="currentColor">
+            <path d="M4 6h10v2H4V6zm0 4h10v2H4v-2zm0 4h7v2H4v-2zm12-9l4 2.5V18a2.5 2.5 0 11-2-2.45V8.28l-4-2.5L16 5z" />
+          </svg>
+        )}
       </div>
 
       {playlist.thumbnail ? (
@@ -140,6 +195,8 @@ function PlaylistRow({ playlist, onOpen }) {
         <p className="text-xs text-gray-500 dark:text-gray-400 truncate flex items-center gap-1.5">
           <span className="truncate">{meta || 'Playlist'}</span>
           {playlist.hasLyrics && <LyricsBadge />}
+          {playlist.autoSync && <SyncBadge />}
+          {syncing && <span className="shrink-0 text-[10px] text-yt-red">checking…</span>}
         </p>
       </div>
 
@@ -152,15 +209,30 @@ function PlaylistRow({ playlist, onOpen }) {
 // The ordered track list for one downloaded playlist.
 function PlaylistDetail({ playlist, onBack }) {
   const { startQueue } = useQueue()
-  const { formatBytes } = useDownloads()
+  const { formatBytes, syncPlaylist, setPlaylistAutoSync, syncingPlaylists } = useDownloads()
+  const [busy, setBusy] = useState(false)
   const tracks = playlist.tracks || []
   const sourceMeta = { title: playlist.title }
   const count = tracks.length
+  const canSync = !!playlist.browseId
+  const syncing = busy || playlist.syncing || syncingPlaylists.includes(playlist.id)
   const meta = [
     `${count} song${count === 1 ? '' : 's'}`,
     playlist.artist,
     playlist.totalBytes ? formatBytes(playlist.totalBytes) : '',
   ].filter(Boolean).join(' • ')
+
+  const checkNow = async () => {
+    if (syncing || !canSync) return
+    setBusy(true)
+    try { await syncPlaylist(playlist.id) } finally { setBusy(false) }
+  }
+
+  const toggleAuto = async () => {
+    if (busy) return
+    setBusy(true)
+    try { await setPlaylistAutoSync(playlist.id, !playlist.autoSync) } finally { setBusy(false) }
+  }
 
   return (
     <section className="animate-fade-in">
@@ -198,8 +270,39 @@ function PlaylistDetail({ playlist, onBack }) {
               <svg viewBox="0 0 24 24" className="w-4 h-4" fill="currentColor"><path d="M17 3h4v4h-2V6.414l-4.293 4.293-1.414-1.414L17.586 5H17V3zM3 5h4.586l3.707 3.707-1.414 1.414L6.586 7H3V5zm14 12h-2v-2h2v-.586l2-2V21h-4v-2h2v-.586l-4.293-4.293 1.414-1.414L17 15.414V17zM3 17h3.586l3.707-3.707 1.414 1.414L7.586 19H3v-2z" /></svg>
               Shuffle
             </button>
+            <button
+              onClick={checkNow}
+              disabled={!canSync || syncing}
+              className="btn-ghost px-4 py-2 text-sm flex items-center gap-2 text-gray-700 dark:text-gray-200 disabled:opacity-50"
+              title={canSync ? 'Check YouTube Music for songs added to this playlist' : 'This playlist has no link back to YouTube Music'}
+            >
+              {syncing ? <Spinner className="w-4 h-4" /> : (
+                <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M20 9a8 8 0 00-14.9-2.3M4 15a8 8 0 0014.9 2.3" />
+                </svg>
+              )}
+              {syncing ? 'Checking…' : 'Sync now'}
+            </button>
           </div>
         </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-3 mb-4 px-1">
+        <div className="min-w-0">
+          <p className="text-sm font-medium flex items-center gap-2">
+            Auto-download new songs
+            {playlist.autoSync && <SyncBadge />}
+          </p>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {playlist.autoSync
+              ? `New songs added to this playlist download automatically${playlist.lastSyncAt ? ` • checked ${fmtWhen(playlist.lastSyncAt)}` : ''}`
+              : canSync
+                ? 'Off — press Sync now to check for new songs yourself'
+                : 'Off — this playlist has no link back to YouTube Music'}
+          </p>
+        </div>
+        <Toggle checked={!!playlist.autoSync} onChange={toggleAuto} disabled={!canSync || busy} />
       </div>
 
       <div className="space-y-0.5">
@@ -212,12 +315,19 @@ function PlaylistDetail({ playlist, onBack }) {
 }
 
 export default function DownloadedMusic() {
-  const { completedDownloads, playlists, refreshCompleted } = useDownloads()
+  const { completedDownloads, playlists, refreshCompleted, syncAllPlaylists, syncingPlaylists } = useDownloads()
   const { startQueue } = useQueue()
   const [selectedId, setSelectedId] = useState(null)
+  const [syncingAll, setSyncingAll] = useState(false)
 
   // Pick up sidecars and playlist records written by the download pipeline.
   useEffect(() => { refreshCompleted().catch(() => {}) }, [refreshCompleted])
+
+  const syncAll = async () => {
+    if (syncingAll) return
+    setSyncingAll(true)
+    try { await syncAllPlaylists() } finally { setSyncingAll(false) }
+  }
 
   // Files owned by a playlist are shown under that playlist, not as loose songs.
   const playlistFiles = new Set()
@@ -247,6 +357,8 @@ export default function DownloadedMusic() {
 
   const lists = playlists || []
   const selected = selectedId ? lists.find((p) => p.id === selectedId) : null
+  const syncable = lists.some((p) => p.browseId)
+  const syncingAny = syncingAll || syncingPlaylists.length > 0
 
   if (selected) {
     return <PlaylistDetail playlist={selected} onBack={() => setSelectedId(null)} />
@@ -277,6 +389,22 @@ export default function DownloadedMusic() {
               Playlists
               <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">{lists.length}</span>
             </h2>
+            {syncable && (
+              <button
+                onClick={syncAll}
+                disabled={syncingAny}
+                className="btn-ghost px-3 py-1.5 text-xs flex items-center gap-1.5 text-gray-600 dark:text-gray-300 disabled:opacity-50 shrink-0"
+                title="Check every playlist for newly added songs"
+              >
+                {syncingAny ? <Spinner className="w-3.5 h-3.5" /> : (
+                  <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M20 9a8 8 0 00-14.9-2.3M4 15a8 8 0 0014.9 2.3" />
+                  </svg>
+                )}
+                {syncingAny ? 'Checking…' : 'Sync all'}
+              </button>
+            )}
           </div>
           <div className="space-y-0.5">
             {lists.map((pl) => <PlaylistRow key={pl.id} playlist={pl} onOpen={setSelectedId} />)}
