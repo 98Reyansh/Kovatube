@@ -701,6 +701,30 @@ html.dark .lrc-line-active .lrc-word-on {
   100% { transform: scale(1); }
 }
 
+/* Smooth karaoke fill. The word currently being sung is painted with a
+   two-stop gradient clipped to the text; the stop position (`--p`, advanced
+   every animation frame from the audio clock) sweeps the "sung" colour across
+   the word in step with the voice. Fully-sung words use `--lrc-on`, upcoming
+   words `--lrc-off`. */
+.lrc-line-active { --lrc-on: #111827; --lrc-off: rgb(107 114 128 / 0.85); }
+html.dark .lrc-line-active { --lrc-on: #fff; --lrc-off: rgb(255 255 255 / 0.55); }
+.lrc-ambient .lrc-line-active { --lrc-on: #fff; --lrc-off: rgb(255 255 255 / 0.5); }
+html.dark .lrc-ambient .lrc-line-active { --lrc-on: #fff; --lrc-off: rgb(255 255 255 / 0.5); }
+
+.lrc-line-active .lrc-word-now,
+html.dark .lrc-line-active .lrc-word-now,
+.lrc-ambient .lrc-line-active .lrc-word-now {
+  background-image: linear-gradient(90deg, var(--lrc-on) var(--p, 0%), var(--lrc-off) var(--p, 0%));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  opacity: 1;
+}
+
+/* Background vocals ("(ooh)", "(You)") read as a lighter echo of the lead. */
+.lrc-word-bg { font-size: 0.9em; opacity: 0.78; }
+
 /* Ambient mode sits on a dark blurred backdrop regardless of theme, so force
    light text there instead of the theme-driven colours above. */
 .lrc-ambient .lrc-line-future { color: rgb(255 255 255 / 0.5); }

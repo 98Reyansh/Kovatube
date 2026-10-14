@@ -2615,7 +2615,8 @@ function parseLrc(lrc) {
     line.words = tokens.map((w, k) => {
       const t = line.t + (dur * acc) / total
       acc += weights[k]
-      return { t, w }
+      const end = line.t + (dur * acc) / total
+      return { t, end, w }
     })
   }
   return lines
@@ -2693,6 +2694,212 @@ async function getSyncedLyrics(track, artist, duration) {
   return { lines, matched: { title: best.trackName, artist: best.artistName, duration: best.duration } }
 }
 
+// ── Word-level lyrics (lrc.red / BiniLyrics TTML) ───────────────────────────
+// lrc.red is a free, keyless lyrics API — the backend that BiniLyrics and
+// better-lyrics surface as "rich" (word-synced) lyrics — and the same kind of
+// source SimpMusic pulls from. A search by track/artist/duration returns
+// Apple-style TTML files that carry a real timestamp for every sung word, so we
+// can highlight word-by-word instead of interpolating from line timings.
+//
+// TTML shape (namespace prefix varies: itunes:, lrc:, or none):
+//   <p begin="27.395" end="28.960"><span begin="27.395" end="27.549">I</span> ...
+// Background vocals are wrapped in <span ttm:role="x-bg"> (no timing of its own)
+// and a word split across spans ("e" + "nough") shares one slot.
+
+const LRC_RED_BASE = 'https://lrc.red/api/v1'
+const LYRICS_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+
+const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
+function decodeEntities(s) {
+  return String(s || '').replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (m, e) => {
+    if (e[0] === '#') {
+      const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10)
+      return Number.isFinite(n) ? String.fromCodePoint(n) : m
+    }
+    return Object.prototype.hasOwnProperty.call(HTML_ENTITIES, e) ? HTML_ENTITIES[e] : m
+  })
+}
+
+// Attribute lookup that ignores any namespace prefix (`itunes:key`, `lrc:key`, `key`).
+function attrOf(attrs, name) {
+  const m = new RegExp('(?:^|\\s)(?:[\\w.-]+:)?' + name + '\\s*=\\s*"([^"]*)"', 'i').exec(attrs || '')
+  return m ? m[1] : null
+}
+
+// TTML time -> seconds. Handles "27.395", "M:SS.mmm" and "HH:MM:SS.mmm".
+function ttmlTime(v) {
+  if (v == null) return null
+  const parts = String(v).trim().split(':')
+  let sec
+  if (parts.length === 3) sec = parseInt(parts[0], 10) * 3600 + parseInt(parts[1], 10) * 60 + parseFloat(parts[2])
+  else if (parts.length === 2) sec = parseInt(parts[0], 10) * 60 + parseFloat(parts[1])
+  else sec = parseFloat(parts[0])
+  return Number.isFinite(sec) ? sec : null
+}
+
+// One <p> (a lyric line) -> { words, text }. `sep` is the whitespace that
+// followed each word, so languages that space words and ones that don't (CJK)
+// both render correctly.
+function parseTtmlParagraph(inner) {
+  const words = []
+  const stack = []
+  let text = ''
+  let lastClosed = null
+  const tagRe = /<(\/?)([a-zA-Z][\w:.-]*)((?:"[^"]*"|[^"'>])*?)(\/?)>/g
+  let pos = 0
+  let m
+  const addText = (s) => {
+    if (!s) return
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i].word) { stack[i].parts.push(s); return }
+    }
+    if (lastClosed && lastClosed.sep == null) lastClosed.sep = s
+    lastClosed = null
+    text += s
+  }
+  while ((m = tagRe.exec(inner))) {
+    addText(inner.slice(pos, m.index))
+    pos = tagRe.lastIndex
+    const closing = m[1] === '/'
+    const name = m[2].toLowerCase()
+    const attrs = m[3] || ''
+    const selfClose = m[4] === '/' || /\/\s*$/.test(attrs)
+    if (name === 'br') { addText(' '); continue }
+    if (name !== 'span') {
+      if (closing) stack.pop()
+      else if (!selfClose) stack.push({ word: false })
+      continue
+    }
+    if (closing) {
+      const top = stack.pop()
+      if (top && top.word) lastClosed = top
+      continue
+    }
+    const begin = ttmlTime(attrOf(attrs, 'begin'))
+    const bg = /role\s*=\s*"x-bg"/i.test(attrs)
+    const parentBg = stack.length ? !!stack[stack.length - 1].bg : false
+    const entry = {
+      word: begin != null, bg: bg || parentBg, t: begin,
+      end: ttmlTime(attrOf(attrs, 'end')), parts: [], sep: null,
+    }
+    if (entry.word) words.push(entry)
+    stack.push(entry)
+  }
+  addText(inner.slice(pos))
+
+  const out = []
+  for (const w of words) {
+    const value = decodeEntities(w.parts.join(''))
+    if (!value.trim()) continue
+    // null sep = spans adjacent with no text between them (no space); whitespace = space.
+    const sep = w.sep == null ? '' : (w.sep.trim() === '' ? ' ' : '')
+    out.push({ t: w.t, end: w.end, w: value, bg: w.bg, sep })
+  }
+  const plain = decodeEntities(inner.replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim()
+  return { words: out, text: plain }
+}
+
+// Whole TTML document -> { lines, syncType }. syncType is 'rich' when any line
+// carries per-word timings, otherwise 'line'.
+function parseTtml(ttml) {
+  if (typeof ttml !== 'string' || !/<p[\s>]/.test(ttml)) return null
+  const lines = []
+  const pRe = /<p\b([^>]*)>([\s\S]*?)<\/p>/g
+  let m
+  while ((m = pRe.exec(ttml))) {
+    const t = ttmlTime(attrOf(m[1], 'begin'))
+    if (t == null) continue
+    const { words, text } = parseTtmlParagraph(m[2])
+    if (!text) continue
+    const line = { t, text }
+    const end = ttmlTime(attrOf(m[1], 'end'))
+    if (end != null) line.end = end
+    if (words.length) line.words = words
+    lines.push(line)
+  }
+  if (lines.length < 2) return null
+  lines.sort((a, b) => a.t - b.t)
+  const hasWords = lines.some((l) => l.words && l.words.length > 1)
+  return { lines, syncType: hasWords ? 'rich' : 'line' }
+}
+
+// Rank lrc.red search hits: closest duration, exact-ish title/artist, and a
+// small bonus for true word timing. Demote alternate cuts so we don't sync to
+// the wrong edit.
+function scoreLyricHit(r, { track, artist, duration }) {
+  const want = String(track || '').toLowerCase()
+  const wantBy = String(artist || '').toLowerCase()
+  const rTitle = String(r.track_name || '').toLowerCase()
+  const rArtist = String(r.artist_name || '').toLowerCase()
+  let score = 0
+  if (duration && r.duration) score -= Math.abs(r.duration - duration) / 5
+  if (rTitle === want) score += 8
+  else if (want && (rTitle.includes(want) || want.includes(rTitle))) score += 3
+  if (wantBy && rArtist) {
+    if (rArtist === wantBy) score += 6
+    else if (rArtist.includes(wantBy) || wantBy.includes(rArtist)) score += 3
+  }
+  if (r.timing_type === 'word') score += 2.5
+  if (/(remix|live|instrumental|karaoke|cover|extended|acoustic|sped up|slowed|nightcore|mixed)/i.test(r.track_name || '')) score -= 5
+  return score
+}
+
+async function lrcRedSearch(params) {
+  const url = `${LRC_RED_BASE}?${new URLSearchParams(params)}`
+  let lastErr = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await fetch(url, {
+        headers: { 'User-Agent': LYRICS_UA, Accept: 'application/json' },
+        signal: AbortSignal.timeout(9000),
+      })
+      if (r.status === 429 || r.status >= 500) { await new Promise((s) => setTimeout(s, 600 * (attempt + 1))); continue }
+      if (!r.ok) return []
+      const data = await r.json()
+      return Array.isArray(data && data.results) ? data.results : []
+    } catch (e) { lastErr = e }
+  }
+  if (lastErr) throw lastErr
+  return []
+}
+
+// Search lrc.red and return parsed word/line-level lyrics, or null.
+async function getRichLyrics(track, artist, duration) {
+  const name = cleanTrackName(track)
+  if (!name) return null
+  const by = cleanArtistName(artist)
+  const dur = duration ? Math.round(duration) : null
+  const withDur = () => { const p = { track: name }; if (by) p.artist = by; if (dur) p.duration = String(dur); return p }
+  let results = []
+  try { results = await lrcRedSearch(withDur()) } catch (e) { console.warn('[Music] lrc.red search', e.message) }
+  if (!results.length && by) { try { results = await lrcRedSearch({ q: `${name} ${by}` }) } catch { /* ignore */ } }
+  if (!results.length) { try { results = await lrcRedSearch({ track: name }) } catch { /* ignore */ } }
+  if (!results.length) return null
+
+  let best = null
+  let bestScore = -Infinity
+  for (const r of results) {
+    if (!r || !r.lyricsUrl || !/^https?:\/\//.test(r.lyricsUrl)) continue
+    const s = scoreLyricHit(r, { track: name, artist: by, duration: dur })
+    if (s > bestScore) { bestScore = s; best = r }
+  }
+  if (!best) return null
+
+  const res = await fetch(best.lyricsUrl, {
+    headers: { 'User-Agent': LYRICS_UA, Accept: 'application/ttml+xml,application/xml,text/xml,*/*' },
+    signal: AbortSignal.timeout(12000),
+  })
+  if (!res.ok) return null
+  const parsed = parseTtml(await res.text())
+  if (!parsed) return null
+  return {
+    lines: parsed.lines,
+    syncType: parsed.syncType,
+    source: parsed.syncType === 'rich' ? 'lrc.red' : 'lrc.red (line)',
+    matched: { title: best.track_name, artist: best.artist_name, duration: best.duration },
+  }
+}
+
 // YouTube's own lyrics. They sit behind a two-step flow: `next` returns the
 // watch tabs (one of which is "Lyrics", carrying a MPLYt_* browse id), and
 // browsing that id returns a musicDescriptionShelfRenderer holding the text.
@@ -2726,15 +2933,49 @@ async function getYtMusicLyrics(videoId) {
   return { ok: false, reason: (message && musicText(message.text)) || 'Lyrics not available' }
 }
 
-// Combined: plain lyrics from YouTube Music + timed lines from LRCLIB.
+// Combined lyrics pipeline, in quality order:
+//   1. lrc.red TTML — real per-word timings ("rich") or per-line timings ("line")
+//   2. LRCLIB      — per-line timings, words interpolated across the line
+//   3. YouTube Mix — untimed plain text (shown when nothing timed is found)
+// Results are cached per video id so flipping between tracks never refetches.
+const lyricsCache = new Map()
+
 async function getMusicLyrics({ videoId, title, artist, duration } = {}) {
-  const yt = await getYtMusicLyrics(videoId)
-  let synced = null
-  try {
-    const s = await getSyncedLyrics(title, artist, duration)
-    if (s) synced = s.lines
-  } catch (e) { console.warn('[Music] synced lyrics', e.message) }
-  return { ...yt, synced, ok: !!(synced && synced.length) || !!yt.ok }
+  if (videoId && lyricsCache.has(videoId)) return lyricsCache.get(videoId)
+  const run = (async () => {
+    let synced = null
+    let syncType = null
+    let source = null
+    try {
+      const rich = await getRichLyrics(title, artist, duration)
+      if (rich && rich.lines.length >= 2) {
+        synced = rich.lines
+        syncType = rich.syncType
+        source = rich.source
+      }
+    } catch (e) { console.warn('[Music] rich lyrics', e.message) }
+    if (!synced) {
+      try {
+        const s = await getSyncedLyrics(title, artist, duration)
+        if (s) { synced = s.lines; syncType = 'line'; source = 'LRCLIB' }
+      } catch (e) { console.warn('[Music] synced lyrics', e.message) }
+    }
+    if (synced && synced.length) {
+      return { ok: true, synced, syncType: syncType || 'line', source, lyrics: '', footer: source ? `Lyrics · ${source}` : '' }
+    }
+    const yt = await getYtMusicLyrics(videoId)
+    return { ...yt, synced: null, syncType: yt.ok ? 'plain' : null, source: yt.ok ? 'YouTube Music' : null }
+  })()
+  const guarded = run.catch((e) => {
+    console.error('[Music] lyrics', e.message)
+    return { ok: false, synced: null, syncType: null, reason: e.message || 'Lyrics unavailable' }
+  })
+  if (videoId) {
+    lyricsCache.set(videoId, guarded)
+    // Cap the cache so a long listening session can't grow it without bound.
+    if (lyricsCache.size > 200) lyricsCache.delete(lyricsCache.keys().next().value)
+  }
+  return guarded
 }
 
 // ── Signed-in library (reuses the app's hidden authed window) ───────────────

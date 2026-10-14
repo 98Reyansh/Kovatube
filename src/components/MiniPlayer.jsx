@@ -59,6 +59,7 @@ const WORD_LEAD = 0.02
 function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, ambient = false }) {
   const boxRef = useRef(null)
   const activeRef = useRef(null)
+  const nowRef = useRef(null)
   const hasSynced = !!(synced && synced.length)
 
   // Active line = last one whose timestamp has passed; `words` = how many of
@@ -84,18 +85,30 @@ function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, a
 
   const [mark, setMark] = useState({ line: -1, words: 0 })
 
-  // High-resolution path: follow the live audio clock every frame.
+  // High-resolution path: follow the live audio clock every frame. Besides
+  // advancing the active line/word, this drives the smooth karaoke fill: the
+  // word being sung gets a `--p` custom property (0%..100%) advanced from its
+  // own start/end timestamps, so the highlight sweeps across it as it is sung.
   useEffect(() => {
     if (!hasSynced || !getTime) return
     let raf = 0
     const loop = () => {
-      const next = markFor(getTime() - offset)
+      const t = getTime() - offset
+      const next = markFor(t)
       setMark((prev) => (prev.line === next.line && prev.words === next.words ? prev : next))
+      const el = nowRef.current
+      const ws = next.line >= 0 ? synced[next.line].words : null
+      if (el && ws && next.words > 0) {
+        const w = ws[next.words - 1]
+        const end = w.end != null ? w.end : (ws[next.words] ? ws[next.words].t : w.t + 0.5)
+        const p = end > w.t ? Math.max(0, Math.min(1, (t - w.t) / (end - w.t))) : 1
+        el.style.setProperty('--p', `${(p * 100).toFixed(1)}%`)
+      }
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [hasSynced, getTime, markFor, offset])
+  }, [hasSynced, getTime, markFor, offset, synced])
 
   // Fallback path when there's no live clock: follow the parent's `currentTime`.
   useEffect(() => {
@@ -133,10 +146,16 @@ function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, a
                 {words.map((wd, j) => {
                   const on = j < mark.words
                   const isNow = j === mark.words - 1
+                  // Use the source's own separator when it has one (so CJK lyrics
+                  // don't get spurious spaces); otherwise fall back to a space.
+                  const sep = wd.sep != null ? wd.sep : (j < words.length - 1 ? ' ' : '')
                   return (
                     <span key={j}>
-                      <span className={`lrc-word${on ? ' lrc-word-on' : ''}${isNow ? ' lrc-word-now' : ''}`}>{wd.w}</span>
-                      {j < words.length - 1 ? ' ' : ''}
+                      <span
+                        ref={isNow ? nowRef : null}
+                        className={`lrc-word${on ? ' lrc-word-on' : ''}${isNow ? ' lrc-word-now' : ''}${wd.bg ? ' lrc-word-bg' : ''}`}
+                      >{wd.w}</span>
+                      {sep}
                     </span>
                   )
                 })}
@@ -240,6 +259,8 @@ export default function MiniPlayer() {
           text: (r && r.lyrics) || '',
           reason: (r && r.reason) || 'Lyrics unavailable',
           footer: (r && r.footer) || '',
+          syncType: (r && r.syncType) || (synced ? 'line' : null),
+          source: (r && r.source) || '',
           synced,
         }
         lyricsCache.current.set(id, entry)
