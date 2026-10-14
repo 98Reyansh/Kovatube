@@ -3015,7 +3015,14 @@ function destroyMusicAuthedWindow() {
 // expects for signed-in calls (cookies alone are treated as anonymous here).
 async function authedMusicBrowse(body) {
   const win = await ensureMusicAuthedWindow()
-  const sapisid = auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-1PAPISID'] || ''
+  let sapisid = auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-1PAPISID'] || ''
+  // The SAPISID signs the request; without it WEB_REMIX treats us as anonymous
+  // even though Chromium still attaches the cookies. If the backup lacks it,
+  // pull the live cookies out of the session and retry once.
+  if (!sapisid) {
+    try { await captureCookiesFromSession() } catch (e) { /* ignore */ }
+    sapisid = auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-1PAPISID'] || ''
+  }
   const result = await win.webContents.executeJavaScript(`
     (async () => {
       try {
@@ -3067,7 +3074,9 @@ async function authedMusicBrowse(body) {
 }
 
 function musicSignedIn() {
-  return !!(auth.cookies && (auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-1PSID'] || auth.cookiesByKey['SID'] || auth.cookiesByKey['HSID']))
+  // Trust the cookie jar over the (possibly stale/empty) backup string: the
+  // SAPISID is what actually authenticates the signed-in music browse.
+  return !!(auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['__Secure-1PSID'] || auth.cookiesByKey['SID'] || auth.cookiesByKey['HSID'])
 }
 
 async function getMusicLibrary() {
@@ -5036,6 +5045,18 @@ app.whenReady().then(async () => {
   smartDlClipboard = !!settingsCache.smartDlClipboard
   loadPrefs()
   loadAuth()
+  // auth.bin can lose its cookie header (e.g. a failed decrypt or a profile
+  // move) while the cached account survives. Everything signed-in that reads
+  // auth.cookies then silently goes anonymous — most visibly the music library,
+  // which reports "signed out" and shows no playlists. The Chromium profile
+  // still holds the live YouTube session, so re-harvest the cookies from it and
+  // repair the backup before any renderer asks for auth state.
+  try {
+    if (await captureCookiesFromSession()) {
+      console.log('[Auth] re-harvested session cookies at startup')
+      persistAuth()
+    }
+  } catch (e) { console.error('[Auth] startup cookie harvest error:', e.message) }
   setupSession()
   setupFileProtocol()
   setupIPC()
