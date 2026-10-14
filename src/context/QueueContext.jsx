@@ -96,7 +96,6 @@ export function QueueProvider({ children }) {
     const audio = audioRef.current
     if (!track || !audio) return
     const id = trackId(track)
-    if (!id || !window.electronAPI?.ytAudioStream) return
 
     const token = ++tokenRef.current
     setIndex(i)
@@ -104,6 +103,27 @@ export function QueueProvider({ children }) {
     setDuration(0)
     setError(null)
     setLoading(true)
+
+    // Downloaded track: play the local file straight from disk (no network
+    // resolve). Seeking works because the ytfile:// handler serves ranges.
+    if (track.localUrl) {
+      try {
+        if (audio.src !== track.localUrl) audio.src = track.localUrl
+        audio.currentTime = 0
+        try { await audio.play() } catch { /* user gesture normally present */ }
+        if (token !== tokenRef.current) return
+        setPlaying(true)
+        console.log(`[audio-timing] ${id} local file`)
+      } catch (e) {
+        if (token === tokenRef.current) {
+          setLoading(false)
+          setError(e?.message || 'Playback failed')
+        }
+      }
+      return
+    }
+
+    if (!id || !window.electronAPI?.ytAudioStream) { setLoading(false); return }
 
     const t0 = performance.now()
     try {
@@ -239,7 +259,7 @@ export function QueueProvider({ children }) {
         const n = pickNext(state, true)
         const nt = n >= 0 ? state.tracks[n] : null
         const nid = trackId(nt)
-        if (nid && !prefetchedRef.current.has(nid)) {
+        if (nid && !nt?.localUrl && !prefetchedRef.current.has(nid)) {
           prefetchedRef.current.add(nid)
           window.electronAPI?.ytAudioPrewarm?.(nid).catch(() => {})
         }

@@ -3056,6 +3056,54 @@ async function writeLyricsSidecar(dl) {
   }
 }
 
+// ── Downloaded music helpers ────────────────────────────────────────────────
+
+const AUDIO_EXTS = new Set(['.mp3', '.m4a', '.aac', '.opus', '.ogg', '.oga', '.flac', '.wav'])
+
+function isAudioFile(filePath) {
+  return AUDIO_EXTS.has(path.extname(String(filePath || '')).toLowerCase())
+}
+
+// Path of a track's saved lyrics (.lrc preferred over .txt), or '' if none.
+function lyricsSidecarFor(filePath) {
+  if (!filePath || typeof filePath !== 'string') return ''
+  const base = filePath.replace(/\.[^.]+$/, '')
+  for (const ext of ['.lrc', '.txt']) {
+    const p = `${base}${ext}`
+    if (fs.existsSync(p)) return p
+  }
+  return ''
+}
+
+// Read a downloaded track's lyric sidecar so it plays with its bundled lyrics
+// even offline. Plays the same shape as getMusicLyrics, or null when absent.
+function readLocalLyrics(filePath) {
+  try {
+    const sidecar = lyricsSidecarFor(filePath)
+    if (!sidecar) return null
+    const raw = fs.readFileSync(sidecar, 'utf-8')
+    if (sidecar.toLowerCase().endsWith('.lrc')) {
+      const lines = parseLrc(raw)
+      if (lines.length) {
+        return { ok: true, synced: lines, syncType: 'rich', source: 'Saved', lyrics: '', footer: 'Lyrics · saved with download' }
+      }
+    }
+    const text = raw.trim()
+    if (text) return { ok: true, synced: null, syncType: 'plain', source: 'Saved', lyrics: text, footer: 'Lyrics · saved with download' }
+    return null
+  } catch (e) {
+    console.warn('[Music] local lyrics', e.message)
+    return null
+  }
+}
+
+// Fields every renderer-side download record needs to be playable as music.
+function musicFieldsFor(filePath, audio) {
+  const localUrl = filePath && fs.existsSync(filePath) ? fileToYtUrl(filePath) : ''
+  const isAudio = !!audio || isAudioFile(filePath)
+  return { localUrl, isAudio, hasLyrics: !!lyricsSidecarFor(filePath) }
+}
+
 // ── Signed-in library (reuses the app's hidden authed window) ───────────────
 
 let musicAuthedWin = null
@@ -3785,6 +3833,8 @@ function streamDownload(downloadId) {
           totalBytes: dl.totalBytes, videoId: dl.videoId, title: dl.title,
           thumbnail: dl.thumbnail, quality: dl.quality, format: dl.format,
           completedAt: new Date().toISOString(),
+          artist: dl.artist || '', duration: dl.duration || '', audio: !!dl.audio,
+          ...musicFieldsFor(dl.filePath, dl.audio),
         })
         const finish = () => { if (dl._settle) dl._settle({ id: downloadId, ok: true, videoId: dl.videoId, filePath: dl.filePath }) }
         if (dl.withLyrics) writeLyricsSidecar(dl).finally(finish)
@@ -4037,6 +4087,8 @@ function startManualYtDlp(dlId) {
         thumbnail: dl.thumbnail && dl.thumbnail.startsWith('ytfile://') ? dl.thumbnail : (thumbUrlFor(dl.videoId) || dl.thumbnail),
         quality: dl.quality, format: dl.format,
         completedAt: new Date().toISOString(),
+        artist: dl.artist || '', duration: dl.duration || '', audio: !!dl.audio,
+        ...musicFieldsFor(dl.filePath, dl.audio),
       })
 
       const finish = () => { if (dl._settle) dl._settle({ id: dlId, ok: true, videoId: dl.videoId, filePath: dl.filePath }) }
@@ -4100,6 +4152,8 @@ function getCompletedDownloads() {
         thumbnail: dl.thumbnail && dl.thumbnail.startsWith('ytfile://') ? dl.thumbnail : (thumbUrlFor(dl.videoId) || dl.thumbnail),
         fileName: dl.fileName, filePath: dl.filePath, quality: dl.quality, format: dl.format,
         totalBytes: dl.totalBytes, status: 'completed',
+        artist: dl.artist || '', duration: dl.duration || '', audio: !!dl.audio,
+        ...musicFieldsFor(dl.filePath, dl.audio),
       })
     }
   })
@@ -4126,8 +4180,8 @@ function getCompletedDownloads() {
           completed.push({
             id: `fs_${f}`, videoId, title: f.replace(/\[[a-zA-Z0-9_-]{11}\]\.[^.]+$/, '').trim() || f.replace(/\.[^.]+$/, ''),
             thumbnail: localThumb, fileName: f, filePath: fp,
-            quality: '', format: path.extname(f),
-            totalBytes: stat.size, status: 'completed',
+            quality: '', format: path.extname(f), totalBytes: stat.size, status: 'completed',
+            ...musicFieldsFor(fp, false),
           })
         }
       }
@@ -5063,7 +5117,13 @@ function setupIPC() {
   ipcMain.handle('yt-music-lyrics', async (_e, args) => {
     const a = typeof args === 'string' ? { videoId: args } : (args || {})
     console.log('[IPC] yt-music-lyrics:', a.videoId, a.title || '', a.duration || '')
-    try { return await getMusicLyrics(a) } catch (e) { console.error('[Music] lyrics', e.message); return { ok: false, reason: e.message } }
+    try {
+      // Downloaded track: its bundled lyrics are the most accurate (and work
+      // offline), so prefer them over a fresh network lookup.
+      const local = a.filePath ? readLocalLyrics(a.filePath) : null
+      if (local && (local.synced?.length || local.lyrics)) return local
+      return await getMusicLyrics(a)
+    } catch (e) { console.error('[Music] lyrics', e.message); return { ok: false, reason: e.message } }
   })
 
   // Audio-only stream URL for the music player (no ffmpeg relay).

@@ -255,17 +255,20 @@ export default function MiniPlayer() {
     try { localStorage.setItem('yt_lyric_offset', String(lyricOffset)) } catch { /* ignore */ }
   }, [lyricOffset])
 
+  const trackKey = current ? (current.videoId || current.localUrl || current.id || '') : ''
+
   // Fetch lyrics on demand (when the Lyrics tab or ambient mode is open),
   // cached per track so flipping back and forth never refetches.
   useEffect(() => {
-    const id = current && current.videoId
+    const id = trackKey
     if ((view !== 'lyrics' && !ambient) || !id) return
     const cached = lyricsCache.current.get(id)
     if (cached) { setLyrics(cached); return }
     let alive = true
     setLyrics({ forId: id, loading: true })
     Promise.resolve(window.electronAPI?.ytMusicLyrics?.({
-      videoId: id,
+      videoId: current && current.videoId,
+      filePath: current && current.filePath,
       title: current && current.title,
       artist: current && current.artist,
       duration: Math.round(duration || 0),
@@ -288,7 +291,8 @@ export default function MiniPlayer() {
       })
       .catch(() => { if (alive) setLyrics({ forId: id, loading: false, ok: false, reason: 'Could not load lyrics', footer: '' }) })
     return () => { alive = false }
-  }, [view, ambient, current && current.videoId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, ambient, trackKey])
 
   // Esc leaves ambient mode.
   useEffect(() => {
@@ -302,7 +306,7 @@ export default function MiniPlayer() {
 
   const pct = duration ? (currentTime / duration) * 100 : 0
   const cycleRepeat = () => setRepeat(repeat === 'off' ? 'all' : repeat === 'all' ? 'one' : 'off')
-  const showLyrics = lyrics && lyrics.forId === current.videoId ? lyrics : null
+  const showLyrics = lyrics && lyrics.forId === trackKey ? lyrics : null
   const hasSynced = !!(showLyrics && showLyrics.ok && showLyrics.synced && showLyrics.synced.length)
 
   return (

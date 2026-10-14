@@ -1,15 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../../context/AuthContext'
 import { useQueue } from '../../context/QueueContext'
+import { useDownloads } from '../../context/DownloadContext'
 import MusicCard from './MusicCard'
 import TrackRow from './TrackRow'
+import DownloadedMusic from './DownloadedMusic'
 
 const TABS = [
   { id: 'home', label: 'Home' },
   { id: 'charts', label: 'Charts' },
   { id: 'search', label: 'Search' },
   { id: 'library', label: 'Library' },
+  { id: 'downloaded', label: 'Downloaded' },
 ]
+
+const AUDIO_RE = /\.(mp3|m4a|aac|opus|ogg|oga|flac|wav)$/i
 
 const FILTERS = [
   { id: '', label: 'All' },
@@ -128,6 +133,7 @@ function CardSkeletonRow() {
 export default function Music() {
   const { signedIn } = useAuth()
   const { startQueue } = useQueue()
+  const { completedDownloads } = useDownloads()
   const [tab, setTab] = useState('home')
   const [home, setHome] = useState(null)
   const [charts, setCharts] = useState(null)
@@ -176,6 +182,7 @@ export default function Music() {
 
   const searchTracks = results?.items?.filter(i => i.videoId) || []
   const searchCards = results?.items?.filter(i => !i.videoId && i.browseId) || []
+  const musicDownloadCount = completedDownloads.filter(d => d.isAudio || AUDIO_RE.test(d.fileName || '')).length
 
   return (
     <div className="animate-fade-in">
@@ -191,6 +198,9 @@ export default function Music() {
               }`}
             >
               {t.label}
+              {t.id === 'downloaded' && musicDownloadCount > 0 && (
+                <span className="ml-1.5 text-xs px-1.5 py-0.5 rounded-full bg-yt-red/15 text-yt-red">{musicDownloadCount}</span>
+              )}
             </button>
           ))}
         </div>
@@ -303,6 +313,10 @@ export default function Music() {
             </>
           )}
         </div>
+      )}
+
+      {tab === 'downloaded' && (
+        <DownloadedMusic />
       )}
     </div>
   )

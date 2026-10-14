@@ -93,6 +93,12 @@ export function DownloadProvider({ children }) {
           totalBytes: data.totalBytes,
           completedAt: data.completedAt,
           status: 'completed',
+          artist: data.artist || '',
+          duration: data.duration || '',
+          audio: !!data.audio,
+          isAudio: !!data.isAudio,
+          localUrl: data.localUrl || '',
+          hasLyrics: !!data.hasLyrics,
         }, ...prev]
       })
       if (!toastHandledIds.current.has(data.id)) {
