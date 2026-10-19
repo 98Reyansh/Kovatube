@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQueue } from '../context/QueueContext'
+import { pushMediaFocus, currentMediaFocus } from '../mediaFocus'
 
 function fmt(t) {
   if (!t || !isFinite(t)) return '0:00'
@@ -294,13 +295,63 @@ export default function MiniPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, ambient, trackKey])
 
-  // Esc leaves ambient mode.
+  // ── Global keyboard shortcuts ──────────────────────────────────────────
+  // The same keys the video player uses (YouTube's set: Space, k, j, l,
+  // arrows, Home/End, digits, +/-) plus music-only ones (n/p, s, r, a).
+  // They work anywhere in the app while a track is loaded — except when a
+  // page-specific player (video, Shorts) has claimed the keyboard through
+  // mediaFocus. Escape is handled first and unguarded so it always exits
+  // ambient mode, even from a focused button.
+  //
+  // The handler lives in a ref so one listener registered at mount always
+  // sees the latest state without re-registering on every render.
+  const shortcutRef = useRef(() => {})
+  shortcutRef.current = (e) => {
+    if (e.key === 'Escape') {
+      if (ambient) setAmbient(false)
+      else if (expanded) setExpanded(false)
+      return
+    }
+    // Leave app/browser combos (Ctrl+R, Ctrl+F, …) alone.
+    if (e.ctrlKey || e.metaKey || e.altKey) return
+    const t = e.target
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+    // A focused control handles its own keys (rows play themselves on Space).
+    if (t && t.closest && t.closest('button, a, [role="button"], [role="switch"]')) return
+    if (!current || currentMediaFocus() !== 'music') return
+
+    const seekBy = (d) => {
+      const target = getAudioTime() + d
+      seek(duration > 0 ? Math.max(0, Math.min(duration, target)) : Math.max(0, target))
+    }
+
+    const k = e.key
+    if (k === ' ') { e.preventDefault(); toggle(); return }
+    if (k === 'k' || k === 'K') { toggle(); return }
+    if (k === 'j' || k === 'J') { seekBy(-10); return }
+    if (k === 'l' || k === 'L') { seekBy(10); return }
+    if (k === 'ArrowLeft') { e.preventDefault(); seekBy(-5); return }
+    if (k === 'ArrowRight') { e.preventDefault(); seekBy(5); return }
+    if (k === 'ArrowUp') { e.preventDefault(); setVolume(volume + 0.05); return }
+    if (k === 'ArrowDown') { e.preventDefault(); setVolume(volume - 0.05); return }
+    if (k === '+' || k === '=') { setVolume(volume + 0.05); return }
+    if (k === '-' || k === '_') { setVolume(volume - 0.05); return }
+    if (k === 'm' || k === 'M') { setVolume(volume === 0 ? 1 : 0); return }
+    if (k === 'Home') { e.preventDefault(); seek(0); return }
+    if (k === 'End') { e.preventDefault(); if (duration > 0) seek(duration); return }
+    if (/^[0-9]$/.test(k)) { if (duration > 0) seek((parseInt(k, 10) / 10) * duration); return }
+    if (k === 'n' || k === 'N') { next(false); return }
+    if (k === 'p' || k === 'P') { prev(); return }
+    if (k === 's' || k === 'S') { setShuffle(v => !v); return }
+    if (k === 'r' || k === 'R') { setRepeat(repeat === 'off' ? 'all' : repeat === 'all' ? 'one' : 'off'); return }
+    if (k === 'a' || k === 'A') { setAmbient(v => !v); return }
+  }
   useEffect(() => {
-    if (!ambient) return
-    const onKey = (e) => { if (e.key === 'Escape') setAmbient(false) }
+    const release = pushMediaFocus('music')
+    const onKey = (e) => shortcutRef.current(e)
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [ambient])
+    return () => { window.removeEventListener('keydown', onKey); release() }
+  }, [])
 
   if (!current) return null
 

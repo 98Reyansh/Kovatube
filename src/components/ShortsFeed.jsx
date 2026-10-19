@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Hls from 'hls.js'
+import { pushMediaFocus } from '../mediaFocus'
 
 function ShortView({ short, onReady }) {
   const [streamUrl, setStreamUrl] = useState(null)
@@ -231,12 +232,15 @@ export default function ShortsFeed() {
   }, [next, prev])
 
   useEffect(() => {
+    // The feed owns the arrow keys while it is on screen, so the music
+    // player's always-on shortcuts stand down here.
+    const releaseFocus = pushMediaFocus('shorts')
     const onKey = (e) => {
       if (e.key === 'ArrowDown' || e.key === 'PageDown') { e.preventDefault(); next() }
       else if (e.key === 'ArrowUp' || e.key === 'PageUp') { e.preventDefault(); prev() }
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    return () => { window.removeEventListener('keydown', onKey); releaseFocus() }
   }, [next, prev])
 
   const short = shorts[index]

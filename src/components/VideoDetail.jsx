@@ -4,6 +4,7 @@ import Hls from 'hls.js'
 import { useDownloads } from '../context/DownloadContext'
 import { useSettings } from '../context/SettingsContext'
 import { useSubscriptions } from '../context/SubscriptionsContext'
+import { pushMediaFocus } from '../mediaFocus'
 import VideoMenu from './VideoMenu'
 import LocalPlayer from './LocalPlayer'
 
@@ -207,6 +208,9 @@ function NativePlayer({ id, autoPlay }) {
   // Official YouTube keyboard shortcuts (Space, k, j, l, m, f, arrows, etc.)
   useEffect(() => {
     if (!streamUrl || loadingStream) return
+    // Claim the keyboard while a video is loaded so the music player's
+    // always-on shortcuts stand down on this page.
+    const releaseFocus = pushMediaFocus('video')
     const onKey = (e) => {
       const t = e.target
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
@@ -237,7 +241,10 @@ function NativePlayer({ id, autoPlay }) {
       }
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      releaseFocus()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamUrl, loadingStream])
 
