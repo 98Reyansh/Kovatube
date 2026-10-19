@@ -15,7 +15,7 @@ export default function HeaderBar() {
   const { subscriptions } = useSubscriptions()
   const { activeDownloads } = useDownloads()
   const { saved: savedVideos } = useSaved()
-  const { enabled: smartDlEnabled, activeDownloads: smartDlActive, toggleSmartDownload } = useSmartDownloads()
+  const { enabled: smartDlEnabled, clipboard: smartDlClipboard, activeDownloads: smartDlActive, toggleSmartDownload, toggleClipboard } = useSmartDownloads()
   const location = useLocation()
   const navigate = useNavigate()
   const [inputValue, setInputValue] = useState('')
@@ -158,7 +158,7 @@ export default function HeaderBar() {
               ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
               : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
           }`}
-          title={smartDlEnabled ? 'Smart Download ON - Auto-downloading For You recommendations' : 'Smart Download OFF - Click to enable'}
+          title={smartDlEnabled ? 'Smart Downloads ON — auto-downloading For You recommendations' : 'Smart Downloads OFF — click to enable'}
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -281,27 +281,27 @@ export default function HeaderBar() {
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    Auto DL every: {settings.smartDlInterval < 60 ? `${settings.smartDlInterval}min` : settings.smartDlInterval === 60 ? '1h' : `${settings.smartDlInterval / 60}h`}
+                    Feed check every: {settings.smartDlInterval < 60 ? `${settings.smartDlInterval}min` : settings.smartDlInterval === 60 ? '1h' : `${settings.smartDlInterval / 60}h`}
                   </button>
 
                   <button
-                    onClick={() => updateSetting('smartDlEnabled', !settings.smartDlEnabled)}
+                    onClick={() => { toggleSmartDownload().catch(() => {}) }}
                     className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded text-xs text-gray-700 dark:text-gray-200 hover:bg-black/[0.04] dark:hover:bg-white/6 transition-colors"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                     </svg>
-                    Smart Downloads: {settings.smartDlEnabled ? 'On' : 'Off'}
+                    Smart Downloads: {smartDlEnabled ? 'On' : 'Off'}
                   </button>
 
                   <button
-                    onClick={() => updateSetting('smartDlClipboard', !settings.smartDlClipboard)}
+                    onClick={() => { toggleClipboard().catch(() => {}) }}
                     className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded text-xs text-gray-700 dark:text-gray-200 hover:bg-black/[0.04] dark:hover:bg-white/6 transition-colors"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m0 0v3m0-3h2a2 2 0 012 2v2a2 2 0 01-2 2H8a2 2 0 01-2-2V7a2 2 0 012-2z" />
                     </svg>
-                    From Clipboard: {settings.smartDlClipboard ? 'On' : 'Off'}
+                    From Clipboard: {smartDlClipboard ? 'On' : 'Off'}
                   </button>
 
                   <hr className="my-0.5 border-gray-100 dark:border-gray-700" />

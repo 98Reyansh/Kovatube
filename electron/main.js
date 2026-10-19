@@ -3788,7 +3788,8 @@ const DEFAULT_SETTINGS = {
   showDescriptions: true,
   reduceMotion: false,
   playbackMode: 'inApp', // 'inApp' | 'iframe'
-  smartDlClipboard: false, // smart-download from clipboard is OFF by default; FYP feed is the default source
+  smartDlEnabled: false,   // Smart Downloads: auto-download from the For You feed
+  smartDlClipboard: false, // Smart Downloads: also download YouTube links copied to the clipboard
   smartDlLimit: 10,        // max smart downloads in total (0 = unlimited)
   smartDlConcurrency: 2,   // max concurrent smart downloads
   smartDlCount: 0,         // persistent total count of smart downloads started
@@ -4945,7 +4946,8 @@ function cancelSmartDownload(dlId) {
 }
 
 function checkClipboard() {
-  if (!smartDlEnabled || !smartDlClipboard) return
+  // The clipboard source is independent of the For You feed toggle.
+  if (!smartDlClipboard) return
 
   let text = ''
   try {
@@ -5558,31 +5560,27 @@ function setupIPC() {
   // Settings
   ipcMain.handle('settings-get', () => loadSettings())
   ipcMain.handle('settings-set', (_e, patch) => {
+    // Capture the previous values *before* saveSettings overwrites the cache,
+    // otherwise the change detection below can never fire.
     const oldInterval = settingsCache.smartDlInterval
     const oldEnabled = settingsCache.smartDlEnabled
+    const oldClipboard = settingsCache.smartDlClipboard
     const result = saveSettings(patch)
-    // Restart FYP downloader if interval changed and smart download is enabled
+    // Restart the For You downloader if its interval changed and it is running
     if (patch.smartDlInterval !== undefined && patch.smartDlInterval !== oldInterval && smartDlEnabled) {
       stopFypDownloader()
       startFypDownloader()
     }
-    // Start/stop FYP downloader when master toggle changes
+    // Smart Downloads (For You feed) master — independent of the clipboard source
     if (patch.smartDlEnabled !== undefined && patch.smartDlEnabled !== oldEnabled) {
-      if (patch.smartDlEnabled) {
-        smartDlEnabled = true
-        startFypDownloader()
-      } else {
-        smartDlEnabled = false
-        stopFypDownloader()
-        stopClipboardWatcher()
-      }
+      smartDlEnabled = !!patch.smartDlEnabled
+      if (smartDlEnabled) startFypDownloader()
+      else stopFypDownloader()
     }
-    // Toggle clipboard watcher when clipboard setting changes
-    if (patch.smartDlClipboard !== undefined && patch.smartDlClipboard !== settingsCache.smartDlClipboard) {
-      if (smartDlEnabled) {
-        if (patch.smartDlClipboard) startClipboardWatcher()
-        else stopClipboardWatcher()
-      }
+    // Clipboard source — independent of the For You feed master
+    if (patch.smartDlClipboard !== undefined && patch.smartDlClipboard !== oldClipboard) {
+      if (patch.smartDlClipboard) startClipboardWatcher()
+      else stopClipboardWatcher()
     }
     return result
   })
@@ -5647,7 +5645,12 @@ function setupIPC() {
     return false
   })
 
-  // Smart Download IPC
+  // Smart Download IPC — two independent sources:
+  //   smart-dl-toggle          → For You feed recommendations
+  //   smart-dl-clipboard-toggle → YouTube links copied to the clipboard
+  // Each is persisted and can run with the other off.
+
+  // For You feed source.
   ipcMain.handle('smart-dl-toggle', async (_e, enabled) => {
     console.log('[IPC] smart-dl-toggle:', enabled)
     if (enabled) {
@@ -5662,29 +5665,30 @@ function setupIPC() {
       }
     }
     smartDlEnabled = !!enabled
-    if (smartDlEnabled) {
-      startFypDownloader()              // For You recommendations are the default source
-      if (smartDlClipboard) startClipboardWatcher()
-    } else {
-      stopFypDownloader()
-      stopClipboardWatcher()
-    }
+    saveSettings({ smartDlEnabled })
+    if (smartDlEnabled) startFypDownloader()
+    else stopFypDownloader()
     return { enabled: smartDlEnabled, clipboard: smartDlClipboard }
   })
 
-  // Toggle the clipboard source (OFF by default; FYP feed is the default source).
+  // Clipboard source (independent of the For You feed).
   ipcMain.handle('smart-dl-clipboard-toggle', async (_e, enabled) => {
     const val = enabled !== undefined ? !!enabled : !smartDlClipboard
-    if (val && !smartDlEnabled) {
-      // Clipboard is an extra source; still require the master switch to be on.
-      return { enabled: smartDlEnabled, clipboard: false }
+    if (val) {
+      const available = await checkYtdlpBinary()
+      if (!available) {
+        sendToRenderer('toast', {
+          type: 'error',
+          message: 'yt-dlp is not installed. Install it with: sudo pip install yt-dlp',
+          duration: 8000,
+        })
+        return { enabled: smartDlEnabled, clipboard: false, ytdlpMissing: true }
+      }
     }
     smartDlClipboard = val
     saveSettings({ smartDlClipboard })
-    if (smartDlEnabled) {
-      if (smartDlClipboard) startClipboardWatcher()
-      else stopClipboardWatcher()
-    }
+    if (smartDlClipboard) startClipboardWatcher()
+    else stopClipboardWatcher()
     console.log('[IPC] smart-dl-clipboard-toggle:', smartDlClipboard)
     return { enabled: smartDlEnabled, clipboard: smartDlClipboard }
   })
@@ -5703,6 +5707,7 @@ function setupIPC() {
 app.whenReady().then(async () => {
   ensureDirectories()
   loadSettings()
+  smartDlEnabled = !!settingsCache.smartDlEnabled
   smartDlClipboard = !!settingsCache.smartDlClipboard
   loadPrefs()
   loadAuth()
@@ -5729,6 +5734,9 @@ app.whenReady().then(async () => {
     const ver = await checkYtdlpVersion()
     console.log(`[App] yt-dlp found: ${ver || 'unknown version'}`)
     startYtdlpUpdateCheck()
+    // Restore the smart-download sources that were left on (each independent).
+    if (smartDlEnabled) startFypDownloader()
+    if (smartDlClipboard) startClipboardWatcher()
   } else {
     console.warn('[App] yt-dlp not found - smart downloads will be unavailable')
     sendToRenderer('toast', {

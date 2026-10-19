@@ -18,6 +18,34 @@ function SectionHeader({ title, count }) {
   )
 }
 
+// Independent on/off switch for one smart-download source.
+function SourceToggle({ on, onChange, disabled, title, description }) {
+  return (
+    <div className="flex items-center justify-between gap-3 bg-white dark:bg-yt-dark rounded-xl border border-gray-200 dark:border-gray-800 px-4 py-3">
+      <div className="min-w-0">
+        <p className="text-sm font-medium">{title}</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400">{description}</p>
+      </div>
+      <button
+        onClick={onChange}
+        disabled={disabled}
+        aria-pressed={on}
+        aria-label={title}
+        className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer hover:shadow-md'} ${on ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-700'}`}
+        title={on ? `${title} ON` : `${title} OFF`}
+      >
+        <span
+          className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow"
+          style={{
+            left: on ? '22px' : '2px',
+            transition: 'left 260ms cubic-bezier(0.4, 0, 0.2, 1)',
+          }}
+        />
+      </button>
+    </div>
+  )
+}
+
 function ActiveDownloadCard({ download }) {
   const { cancelDownload, formatBytes, formatSpeed } = useDownloads()
   const progress = download.progress || 0
@@ -336,38 +364,22 @@ export default function Downloads() {
 
             <section>
               <SectionHeader title="Smart Downloads" />
-              <div className="flex items-center justify-between gap-3 bg-white dark:bg-yt-dark rounded-xl border border-gray-200 dark:border-gray-800 px-4 py-3 mb-3">
-                <div>
-                  <p className="text-sm font-medium">Download from clipboard</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Also grab YouTube links you copy. Off by default — smart downloads pull from your For You page.
-                  </p>
-                </div>
-                <button
-                  onClick={() => { toggleClipboard().catch(() => {}) }}
-                  disabled={!smartDlEnabled}
-                  aria-pressed={smartDlClipboard}
-                  className={`relative shrink-0 w-11 h-6 rounded-full transition-colors ${smartDlEnabled ? 'cursor-pointer' : 'cursor-not-allowed opacity-40'} ${smartDlClipboard ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-700'} ${smartDlEnabled ? 'hover:shadow-md' : ''}`}
-                  title={smartDlClipboard ? 'Clipboard downloads ON' : 'Clipboard downloads OFF'}
-                >
-                  <span
-                    className="absolute top-0.5 w-5 h-5 bg-white rounded-full shadow"
-                    style={{
-                      left: smartDlClipboard ? '22px' : '2px',
-                      transition: 'left 260ms cubic-bezier(0.4, 0, 0.2, 1)',
-                    }}
-                  />
-                </button>
+              <div className="space-y-3 mb-4">
+                <SourceToggle
+                  on={smartDlEnabled}
+                  onChange={() => { toggleSmartDownload().catch(() => {}) }}
+                  title="For You recommendations"
+                  description="Automatically download new videos from your For You page."
+                />
+                <SourceToggle
+                  on={smartDlClipboard}
+                  onChange={() => { toggleClipboard().catch(() => {}) }}
+                  title="Download from clipboard"
+                  description="Automatically download YouTube links you copy to the clipboard."
+                />
               </div>
 
-              {!smartDlEnabled ? (
-                <EmptyBox
-                  accent="bg-green-500/10"
-                  icon={<svg className="w-8 h-8 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>}
-                  title="Smart Downloads are disabled"
-                  message="Enable via the bell icon in the header to automatically download recommendations from your For You page"
-                />
-              ) : smartDlActive.length > 0 ? (
+              {smartDlActive.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {smartDlActive.map(dl => <SmartDownloadCard key={dl.id} download={dl} />)}
                 </div>
@@ -375,12 +387,25 @@ export default function Downloads() {
                 <div className="space-y-2">
                   {smartDlHistory.map(dl => <SmartDownloadHistoryCard key={dl.id} download={dl} onPlayInApp={handlePlayInApp} />)}
                 </div>
-              ) : (
+              ) : (smartDlEnabled || smartDlClipboard) ? (
                 <EmptyBox
                   accent="bg-green-500/10"
                   icon={<svg className="w-8 h-8 text-green-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>}
-                  title="Watching your For You page for new recommendations..."
-                  message={smartDlClipboard ? 'Recommended videos are downloaded automatically. Clipboard watching is also on.' : 'Recommended videos are downloaded automatically as they appear on your For You page'}
+                  title="Watching for new downloads..."
+                  message={
+                    smartDlEnabled && smartDlClipboard
+                      ? 'New recommendations and copied links are downloaded automatically.'
+                      : smartDlClipboard
+                        ? 'YouTube links you copy are downloaded automatically.'
+                        : 'Recommended videos are downloaded automatically as they appear on your For You page.'
+                  }
+                />
+              ) : (
+                <EmptyBox
+                  accent="bg-green-500/10"
+                  icon={<svg className="w-8 h-8 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>}
+                  title="Smart Downloads are off"
+                  message="Turn on the For You feed source or the clipboard source above to download automatically"
                 />
               )}
             </section>

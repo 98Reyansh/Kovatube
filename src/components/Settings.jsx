@@ -1,6 +1,7 @@
 import { useSettings, ACCENT_PRESETS } from '../context/SettingsContext'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
+import { useSmartDownloads } from '../context/SmartDownloadContext'
 
 function Toggle({ checked, onChange, disabled }) {
   return (
@@ -45,6 +46,7 @@ export default function Settings() {
   const { settings, hydrated, updateSetting } = useSettings()
   const { addToast } = useToast()
   const { signedIn, account, signingIn, signIn, signOut } = useAuth()
+  const { enabled: smartDlEnabled, clipboard: smartDlClipboard, toggleSmartDownload, toggleClipboard } = useSmartDownloads()
 
   const handleSignIn = async () => {
     const ok = await signIn()
@@ -293,6 +295,30 @@ export default function Settings() {
                 <option value="mkv">MKV</option>
                 <option value="webm">WebM</option>
               </select>
+            </SettingRow>
+
+            <SettingRow
+              title="Smart Downloads (For You feed)"
+              description="Automatically download new videos from your For You page"
+              icon={
+                <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              }
+            >
+              <Toggle checked={smartDlEnabled} onChange={() => { toggleSmartDownload().catch(() => {}) }} />
+            </SettingRow>
+
+            <SettingRow
+              title="Download from clipboard"
+              description="Automatically download YouTube links you copy"
+              icon={
+                <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m0 0v3m0-3h2a2 2 0 012 2v2a2 2 0 01-2 2H8a2 2 0 01-2-2V7a2 2 0 012-2z" />
+                </svg>
+              }
+            >
+              <Toggle checked={smartDlClipboard} onChange={() => { toggleClipboard().catch(() => {}) }} />
             </SettingRow>
 
             <SettingRow
