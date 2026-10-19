@@ -845,7 +845,7 @@ export default function VideoDetail() {
                   </div>
                 </div>
                 <p className="text-xs text-gray-400 dark:text-gray-500 text-center pt-2">
-                  Downloads are saved to ~/.config/Kovatube/downloads
+                  Videos save to ~/.config/Kovatube/downloads/videos
                 </p>
               </>
             )}

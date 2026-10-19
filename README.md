@@ -76,6 +76,7 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 
 ### Downloads & offline
 - **Download** videos/audio, with a fast InnerTube path and a `yt-dlp` fallback.
+- **Music and videos kept apart** — songs land in `~/.config/Kovatube/downloads/music`, videos in `~/.config/Kovatube/downloads/videos` (previously one mixed folder; existing files are tidied into the right one on launch).
 - **Playlist & album downloads** — each song saved as MP3 with its lyrics alongside; the playlist shows up as one entry with its songs in order.
 - **Auto-sync playlists** — songs you add to a downloaded playlist later are fetched and downloaded automatically (checked at launch and every 15 minutes, or on demand with **Sync now**). Toggle it per playlist.
 - **Smart Download** — two **independent** sources, each with its own toggle and its own download budget: auto-grab videos from your **For You** recommendations, and/or auto-download YouTube links you **copy to the clipboard**. Counters are per source and can be reset in Settings; a failed or cancelled download gives its slot back.

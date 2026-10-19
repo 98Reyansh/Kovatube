@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('electronAPI', {
   getAppPath: () => ipcRenderer.invoke('get-app-path'),
   getDownloadsPath: () => ipcRenderer.invoke('get-downloads-path'),
+  getDownloadPaths: () => ipcRenderer.invoke('get-download-paths'),
   getDownloadsList: () => ipcRenderer.invoke('get-downloads-list'),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   saveFile: (data) => ipcRenderer.invoke('save-file', data),

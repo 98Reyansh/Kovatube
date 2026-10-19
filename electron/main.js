@@ -27,6 +27,11 @@ process.on('unhandledRejection', (reason) => {
 
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'Kovatube')
 const DOWNLOADS_DIR = path.join(CONFIG_DIR, 'downloads')
+// Music (audio) and video downloads live in their own subfolders so the two
+// kinds never mix in one pile.
+const MUSIC_DIR = path.join(DOWNLOADS_DIR, 'music')
+const VIDEOS_DIR = path.join(DOWNLOADS_DIR, 'videos')
+const MEDIA_DIRS = [MUSIC_DIR, VIDEOS_DIR]
 const THUMBS_DIR = path.join(CONFIG_DIR, 'thumbs')
 const STREAM_CACHE_DIR = path.join(CONFIG_DIR, 'cache')
 
@@ -57,8 +62,62 @@ function clearSearchCache() {
 function ensureDirectories() {
   if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
   if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true })
+  for (const d of MEDIA_DIRS) {
+    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true })
+  }
   if (!fs.existsSync(THUMBS_DIR)) fs.mkdirSync(THUMBS_DIR, { recursive: true })
   if (!fs.existsSync(STREAM_CACHE_DIR)) fs.mkdirSync(STREAM_CACHE_DIR, { recursive: true })
+}
+
+// One-time tidy-up: downloads used to share one folder. Move anything left at the
+// top level into music/ or videos/ by extension, so both the old and the new
+// layout end up in the same place. Never overwrites: if the destination already
+// has a file with that name, the original is left where it is.
+function migrateDownloadsLayout() {
+  let entries = []
+  try { entries = fs.readdirSync(DOWNLOADS_DIR, { withFileTypes: true }) } catch { return }
+
+  const moveIfAbsent = (name, toDir) => {
+    const from = path.join(DOWNLOADS_DIR, name)
+    if (!fs.existsSync(from)) return false
+    const to = path.join(toDir, name)
+    if (fs.existsSync(to)) return false
+    try { fs.renameSync(from, to); return true } catch { return false }
+  }
+
+  let moved = 0
+  // Pass 1: media files, each followed by its own lyrics sidecars.
+  for (const e of entries) {
+    if (!e.isFile()) continue
+    const name = e.name
+    const ext = path.extname(name).toLowerCase()
+    if (!AUDIO_EXTS.has(ext) && !VIDEO_EXTS.has(ext)) continue
+    const toDir = AUDIO_EXTS.has(ext) ? MUSIC_DIR : VIDEOS_DIR
+    if (moveIfAbsent(name, toDir)) moved++
+    const stem = name.replace(/\.[^.]+$/, '')
+    for (const sc of [`${stem}.lrc`, `${stem}.txt`]) {
+      if (moveIfAbsent(sc, MUSIC_DIR)) moved++
+    }
+  }
+
+  // Pass 2: sidecars whose media already sits in music/ (left behind by an
+  // earlier move). A stray .txt with no matching song is left alone.
+  for (const e of entries) {
+    if (!e.isFile()) continue
+    const name = e.name
+    const ext = path.extname(name).toLowerCase()
+    if (ext !== '.lrc' && ext !== '.txt') continue
+    if (!fs.existsSync(path.join(DOWNLOADS_DIR, name))) continue
+    const stem = name.replace(/\.[^.]+$/, '')
+    let hasMedia = false
+    try {
+      hasMedia = fs.readdirSync(MUSIC_DIR).some(x =>
+        x.startsWith(stem + '.') && AUDIO_EXTS.has(path.extname(x).toLowerCase()))
+    } catch { /* music folder may not exist yet */ }
+    if (hasMedia && moveIfAbsent(name, MUSIC_DIR)) moved++
+  }
+
+  if (moved) console.log(`[Downloads] Moved ${moved} file(s) into music/ and videos/`)
 }
 
 // ─── YouTube Innertube API ───────────────────────────────────────────────────
@@ -3096,6 +3155,7 @@ async function writeLyricsSidecar(dl) {
 // ── Downloaded music helpers ────────────────────────────────────────────────
 
 const AUDIO_EXTS = new Set(['.mp3', '.m4a', '.aac', '.opus', '.ogg', '.oga', '.flac', '.wav'])
+const VIDEO_EXTS = new Set(['.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v'])
 
 function isAudioFile(filePath) {
   return AUDIO_EXTS.has(path.extname(String(filePath || '')).toLowerCase())
@@ -3937,7 +3997,8 @@ function streamDownload(downloadId) {
       else dl.fileName = sanitizeFilename(`${dl.title || dl.videoId}_${dl.quality}`) + (dl.format === 'mp3' ? '.mp3' : '.mp4')
     }
 
-    dl.filePath = path.join(DOWNLOADS_DIR, dl.fileName)
+    dl.dir = dl.dir || downloadDirFor(dl)
+    dl.filePath = path.join(dl.dir, dl.fileName)
     dl.status = 'downloading'
     dl.startTime = Date.now()
 
@@ -4071,6 +4132,17 @@ function persistThumbnail(videoId, url) {
   })
 }
 
+// True when a download is audio-only (a saved song) rather than a video.
+function isAudioDownload(dl) {
+  return !!dl.audio || dl.format === 'mp3' || dl.format === 'm4a' ||
+    String(dl.quality || '').toLowerCase().includes('audio')
+}
+
+// Folder a download belongs in: songs to music/, everything else to videos/.
+function downloadDirFor(dl) {
+  return isAudioDownload(dl) ? MUSIC_DIR : VIDEOS_DIR
+}
+
 async function startDownload(videoId, quality, format, title, thumbnail, audio, opts = {}) {
   const dlId = `dl_${++downloadIdCounter}`
 
@@ -4085,6 +4157,7 @@ async function startDownload(videoId, quality, format, title, thumbnail, audio, 
     duration: opts.duration || '',
     withLyrics: opts.withLyrics !== undefined ? !!opts.withLyrics : !!audio,
     fileName, filePath: '', url: videoUrl,
+    dir: downloadDirFor({ audio, format, quality }),
     status: 'downloading', progress: 0, speed: 0,
     transferredBytes: 0, totalBytes: 0,
     startTime: Date.now(), error: null,
@@ -4132,9 +4205,12 @@ function startManualYtDlp(dlId) {
 
   const qualityNum = (dl.quality?.match(/(\d+)/)?.[1]) ? parseInt(dl.quality.match(/(\d+)/)[1]) : 720
   const height = Math.min(qualityNum || 720, 1080)
-  const isAudio = dl.audio || dl.format === 'mp3' || dl.format === 'm4a' || (dl.quality || '').toLowerCase().includes('audio')
+  const isAudio = isAudioDownload(dl)
 
-  const outputTemplate = path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s')
+  // Songs go to music/, videos to videos/.
+  const targetDir = dl.dir || (isAudio ? MUSIC_DIR : VIDEOS_DIR)
+  dl.dir = targetDir
+  const outputTemplate = path.join(targetDir, '%(title)s [%(id)s].%(ext)s')
 
   const args = []
   if (isAudio) {
@@ -4234,12 +4310,13 @@ function startManualYtDlp(dlId) {
       dl.progress = 100
       dl.speed = 0
 
-      const candidates = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.includes(dl.videoId))
+      const targetDir = dl.dir || VIDEOS_DIR
+      const candidates = fs.readdirSync(targetDir).filter(f => f.includes(dl.videoId))
       if (candidates.length > 0) {
         dl.fileName = candidates[0]
-        dl.filePath = path.join(DOWNLOADS_DIR, candidates[0])
+        dl.filePath = path.join(targetDir, candidates[0])
       } else if (dl.fileName) {
-        dl.filePath = path.join(DOWNLOADS_DIR, dl.fileName)
+        dl.filePath = path.join(targetDir, dl.fileName)
       }
 
       try {
@@ -4327,35 +4404,39 @@ function getCompletedDownloads() {
     }
   })
 
-  try {
-    const files = fs.readdirSync(DOWNLOADS_DIR)
-    const mediaExt = /\.(mp4|webm|mkv|mp3|m4a|aac|opus|ogg|flac|wav)$/i
+  // Scan both media folders (music/, videos/), and any file still sitting at
+  // the top level, so a download is listed wherever it landed.
+  const mediaExt = /\.(mp4|webm|mkv|mp3|m4a|aac|opus|ogg|flac|wav)$/i
+  for (const dir of [...MEDIA_DIRS, DOWNLOADS_DIR]) {
+    let files = []
+    try { files = fs.readdirSync(dir) } catch { continue }
     for (const f of files) {
-      const fp = path.join(DOWNLOADS_DIR, f)
-      const stat = fs.statSync(fp)
-      if (stat.isFile()) {
-        // Lyric sidecars (.lrc/.txt written next to a downloaded track) are not
-        // downloads themselves; hide them from the list.
-        if (/\.(lrc|txt)$/i.test(f)) {
-          const stem = f.replace(/\.[^.]+$/, '')
-          if (files.some(x => x !== f && x.startsWith(stem + '.') && mediaExt.test(x))) continue
-        }
-        const existsInActive = completed.some(c => c.fileName === f)
-        if (!existsInActive && !activeDownloads.has(`fs_${f}`)) {
-          // Recover the video id from yt-dlp filenames: "Title [ID].ext"
-          const idMatch = f.match(/\[([a-zA-Z0-9_-]{11})\]\.[^.]+$/)
-          const videoId = idMatch ? idMatch[1] : ''
-          const localThumb = videoId ? thumbUrlFor(videoId) : ''
-          completed.push({
-            id: `fs_${f}`, videoId, title: f.replace(/\[[a-zA-Z0-9_-]{11}\]\.[^.]+$/, '').trim() || f.replace(/\.[^.]+$/, ''),
-            thumbnail: localThumb, fileName: f, filePath: fp,
-            quality: '', format: path.extname(f), totalBytes: stat.size, status: 'completed',
-            ...musicFieldsFor(fp, false),
-          })
-        }
+      const fp = path.join(dir, f)
+      let stat
+      try { stat = fs.statSync(fp) } catch { continue }
+      if (!stat.isFile()) continue
+      // Lyric sidecars (.lrc/.txt written next to a downloaded track) are not
+      // downloads themselves; hide them from the list.
+      if (/\.(lrc|txt)$/i.test(f)) {
+        const stem = f.replace(/\.[^.]+$/, '')
+        if (files.some(x => x !== f && x.startsWith(stem + '.') && mediaExt.test(x))) continue
+      }
+      const existsInActive = completed.some(c => c.fileName === f && path.dirname(c.filePath || '') === dir)
+      const fsId = `fs_${path.basename(dir)}_${f}`
+      if (!existsInActive && !activeDownloads.has(fsId)) {
+        // Recover the video id from yt-dlp filenames: "Title [ID].ext"
+        const idMatch = f.match(/\[([a-zA-Z0-9_-]{11})\]\.[^.]+$/)
+        const videoId = idMatch ? idMatch[1] : ''
+        const localThumb = videoId ? thumbUrlFor(videoId) : ''
+        completed.push({
+          id: fsId, videoId, title: f.replace(/\[[a-zA-Z0-9_-]{11}\]\.[^.]+$/, '').trim() || f.replace(/\.[^.]+$/, ''),
+          thumbnail: localThumb, fileName: f, filePath: fp,
+          quality: '', format: path.extname(f), totalBytes: stat.size, status: 'completed',
+          ...musicFieldsFor(fp, false),
+        })
       }
     }
-  } catch {}
+  }
 
   return completed
 }
@@ -4751,7 +4832,7 @@ function startSmartDownload(videoId, url, onDone, source = 'fyp') {
 
   const dlId = `smart_${++smartDlIdCounter}`
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`
-  const outputTemplate = path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s')
+  const outputTemplate = path.join(VIDEOS_DIR, '%(title)s [%(id)s].%(ext)s')
 
   const args = [
     '-f', 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]',
@@ -4853,12 +4934,12 @@ function startSmartDownload(videoId, url, onDone, source = 'fyp') {
       dl.progress = 100
       dl.speed = ''
 
-      const candidates = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.includes(videoId))
+      const candidates = fs.readdirSync(VIDEOS_DIR).filter(f => f.includes(videoId))
       if (candidates.length > 0) {
         dl.fileName = candidates[0]
-        dl.filePath = path.join(DOWNLOADS_DIR, candidates[0])
+        dl.filePath = path.join(VIDEOS_DIR, candidates[0])
       } else if (dl.fileName) {
-        dl.filePath = path.join(DOWNLOADS_DIR, dl.fileName)
+        dl.filePath = path.join(VIDEOS_DIR, dl.fileName)
       }
 
       try {
@@ -5008,15 +5089,43 @@ function stopClipboardWatcher() {
 
 // ─── Smart Download: For You recommendations (default source) ───────────────
 
-// True if a video id is already on disk (as a downloaded file) — we never
-// re-download something we already have.
-function isAlreadyDownloaded(videoId) {
-  try {
-    const files = fs.readdirSync(DOWNLOADS_DIR)
-    return files.some(f => f.includes(`[${videoId}]`))
-  } catch {
-    return false
+// Find the media file for a video id in either media folder (sidecars excluded).
+function findMediaFile(videoId) {
+  if (!videoId) return ''
+  for (const dir of MEDIA_DIRS) {
+    try {
+      const f = fs.readdirSync(dir).find(x => x.includes(`[${videoId}]`) && !/\.(lrc|txt)$/i.test(x))
+      if (f) return path.join(dir, f)
+    } catch { /* folder may not exist yet */ }
   }
+  return ''
+}
+
+// True if a video id is already on disk (as a downloaded file) — we never
+// re-download something we already have. Both media folders are searched.
+function isAlreadyDownloaded(videoId) {
+  return !!findMediaFile(videoId)
+}
+
+// Playlist records remember each track's saved file path. After the one-time
+// music/videos tidy-up (or any move on disk) those paths can go stale, so look
+// the track up again by video id and rewrite the record.
+function repairPlaylistPaths() {
+  let changed = false
+  const list = readPlaylists()
+  for (const p of list) {
+    for (const t of (p && p.tracks) || []) {
+      if (!t || !t.videoId) continue
+      if (t.filePath && fs.existsSync(t.filePath)) continue
+      const found = findMediaFile(t.videoId)
+      if (found) {
+        t.filePath = found
+        t.fileName = path.basename(found)
+        changed = true
+      }
+    }
+  }
+  if (changed) writePlaylists(list)
 }
 
 function isActiveSmartDownload(videoId) {
@@ -5346,6 +5455,10 @@ function setupIPC() {
   ipcMain.handle('get-app-path', () => CONFIG_DIR)
   ipcMain.handle('get-downloads-path', () => DOWNLOADS_DIR)
 
+  // The three folders the renderer shows in Settings: the base downloads dir and
+  // the music/videos subfolders.
+  ipcMain.handle('get-download-paths', () => ({ base: DOWNLOADS_DIR, music: MUSIC_DIR, videos: VIDEOS_DIR }))
+
   // Connectivity probe for the offline screen's "Retry" action. Uses the raw
   // fetch (not the reporting wrapper) so a failed probe can't re-trigger itself.
   ipcMain.handle('net-probe', async () => {
@@ -5365,8 +5478,19 @@ function setupIPC() {
   })
 
   ipcMain.handle('get-downloads-list', async () => {
-    try { return fs.readdirSync(DOWNLOADS_DIR).map(f => ({ name: f, path: path.join(DOWNLOADS_DIR, f), size: fs.statSync(path.join(DOWNLOADS_DIR, f)).size, modified: fs.statSync(DOWNLOADS_DIR, f).mtime })) }
-    catch { return [] }
+    const out = []
+    for (const dir of [...MEDIA_DIRS, DOWNLOADS_DIR]) {
+      try {
+        for (const f of fs.readdirSync(dir)) {
+          const p = path.join(dir, f)
+          let st
+          try { st = fs.statSync(p) } catch { continue }
+          if (!st.isFile()) continue
+          out.push({ name: f, path: p, size: st.size, modified: st.mtime })
+        }
+      } catch { /* folder may not exist */ }
+    }
+    return out
   })
 
   ipcMain.handle('select-directory', async () => {
@@ -5752,6 +5876,8 @@ function setupIPC() {
 
 app.whenReady().then(async () => {
   ensureDirectories()
+  migrateDownloadsLayout()
+  repairPlaylistPaths()
   loadSettings()
   smartDlEnabled = !!settingsCache.smartDlEnabled
   smartDlClipboard = !!settingsCache.smartDlClipboard

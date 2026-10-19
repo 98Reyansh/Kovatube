@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useSettings, ACCENT_PRESETS } from '../context/SettingsContext'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
@@ -49,6 +49,14 @@ export default function Settings() {
   const { signedIn, account, signingIn, signIn, signOut } = useAuth()
   const { enabled: smartDlEnabled, clipboard: smartDlClipboard, counts, toggleSmartDownload, toggleClipboard, refreshStatus, resetCounts } = useSmartDownloads()
 
+  // Real on-disk download folders (songs and videos are kept apart), shown in
+  // the Downloads section below.
+  const [dlPaths, setDlPaths] = useState(null)
+  useEffect(() => {
+    if (!window.electronAPI?.getDownloadPaths) return
+    window.electronAPI.getDownloadPaths().then(setDlPaths).catch(() => {})
+  }, [])
+
   // Keep the per-source usage in the limit row accurate while this page is open.
   useEffect(() => { refreshStatus() }, [refreshStatus])
 
@@ -66,15 +74,6 @@ export default function Settings() {
   const handleSignOut = async () => {
     await signOut()
     addToast('info', 'Signed out of Google', 3000)
-  }
-
-  const selectDir = async () => {
-    if (!window.electronAPI) return
-    const picked = await window.electronAPI.selectDirectory()
-    if (picked) {
-      await updateSetting('downloadDir', picked)
-      addToast('success', 'Downloads folder updated', 3000)
-    }
   }
 
   return (
@@ -272,20 +271,17 @@ export default function Settings() {
             <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Downloads</h2>
             <SettingRow
               title="Downloads folder"
-              description={settings.downloadDir || 'Current: ~/.config/Kovatube/downloads'}
+              description={
+                dlPaths
+                  ? `Music and videos are kept apart. Videos: ${dlPaths.videos} · Music: ${dlPaths.music}`
+                  : 'Music and videos are kept in separate folders inside ~/.config/Kovatube/downloads'
+              }
               icon={
                 <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                 </svg>
               }
-            >
-              <button
-                onClick={selectDir}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-yt-red text-white hover:bg-yt-red-hover transition-colors hover-ring"
-              >
-                Change
-              </button>
-            </SettingRow>
+            />
 
             <SettingRow
               title="Default download format"
