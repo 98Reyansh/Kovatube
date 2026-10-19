@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   smartDlToggle: (enabled) => ipcRenderer.invoke('smart-dl-toggle', enabled),
   smartDlClipboardToggle: (enabled) => ipcRenderer.invoke('smart-dl-clipboard-toggle', enabled),
   smartDlStatus: () => ipcRenderer.invoke('smart-dl-status'),
+  smartDlResetCounts: () => ipcRenderer.invoke('smart-dl-reset-counts'),
   smartDlHistory: () => ipcRenderer.invoke('smart-dl-history'),
   smartDlCancel: (dlId) => ipcRenderer.invoke('smart-dl-cancel', dlId),
   onSmartDlProgress: (cb) => { ipcRenderer.on('smart-dl-progress', (_e, data) => cb(data)) },

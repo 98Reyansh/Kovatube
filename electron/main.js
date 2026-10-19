@@ -3790,9 +3790,10 @@ const DEFAULT_SETTINGS = {
   playbackMode: 'inApp', // 'inApp' | 'iframe'
   smartDlEnabled: false,   // Smart Downloads: auto-download from the For You feed
   smartDlClipboard: false, // Smart Downloads: also download YouTube links copied to the clipboard
-  smartDlLimit: 10,        // max smart downloads in total (0 = unlimited)
+  smartDlLimit: 10,        // max smart downloads per source (0 = unlimited)
   smartDlConcurrency: 2,   // max concurrent smart downloads
-  smartDlCount: 0,         // persistent total count of smart downloads started
+  smartDlCount: 0,         // persistent count of For You smart downloads started
+  smartDlClipboardCount: 0, // persistent count of clipboard smart downloads started
   smartDlInterval: 60,     // minutes between auto-download checks
   fypSource: 'auto',       // 'auto' (personalized when signed in) | 'signedIn' | 'anon'
 }
@@ -4741,7 +4742,7 @@ function parseYtdlpProgress(line) {
   return null
 }
 
-function startSmartDownload(videoId, url, onDone) {
+function startSmartDownload(videoId, url, onDone, source = 'fyp') {
   if (ytdlpAvailable === false) {
     console.error('[SmartDL] yt-dlp not available, cannot start download')
     sendToRenderer('toast', { type: 'error', message: 'yt-dlp is not installed. Smart downloads disabled.', duration: 6000 })
@@ -4771,7 +4772,7 @@ function startSmartDownload(videoId, url, onDone) {
   })
 
   const dl = {
-    id: dlId, videoId, url, status: 'starting',
+    id: dlId, videoId, url, status: 'starting', source,
     title: '', fileName: '', filePath: '',
     progress: 0, speed: '', eta: '', totalSize: '',
     process: proc, startedAt: Date.now(),
@@ -4885,6 +4886,9 @@ function startSmartDownload(videoId, url, onDone) {
       dl.error = `yt-dlp exited with code ${code}`
       console.error(`[SmartDL] Failed (code ${code}): ${dl.title || dl.videoId}`)
       fireNotify('Smart Download Failed', `${dl.title || dl.videoId}: exit code ${code}`)
+      // Hand the slot back so the same link can be retried and a failure
+      // doesn't silently consume this source's budget.
+      releaseSmartDlSlot(dl.videoId, dl.source)
 
       sendToRenderer('smart-dl-progress', {
         id: dlId, videoId: dl.videoId, status: 'failed',
@@ -4899,6 +4903,7 @@ function startSmartDownload(videoId, url, onDone) {
     dl.error = err.message
     console.error(`[SmartDL] Process error: ${err.message}`)
     fireNotify('Smart Download Error', err.message)
+    releaseSmartDlSlot(dl.videoId, dl.source)
 
     sendToRenderer('smart-dl-progress', {
       id: dlId, videoId: dl.videoId, status: 'failed',
@@ -4940,6 +4945,7 @@ function cancelSmartDownload(dlId) {
       if (dl.process && !dl.process.killed) dl.process.kill('SIGKILL')
     }, 3000)
   }
+  releaseSmartDlSlot(dl.videoId, dl.source)
   smartDownloads.delete(dlId)
   sendToRenderer('smart-dl-cancelled', { id: dlId })
   return true
@@ -4967,11 +4973,21 @@ function checkClipboard() {
   const alreadyActive = [...smartDownloads.values()].some(d => d.videoId === id && d.status !== 'failed' && d.status !== 'cancelled')
   if (alreadyActive) return
 
-  // Respect the persistent total cap; reserve a slot or skip.
-  if (!reserveSmartDlSlot(id)) return
+  // Respect this source's own cap. Unlike the automatic For You feed, a
+  // clipboard link is a deliberate user action, so say why nothing happened
+  // instead of failing silently.
+  if (smartDlLimitReached('clipboard')) {
+    sendToRenderer('toast', {
+      type: 'error',
+      message: `Clipboard download skipped: limit of ${getSmartDlLimit()} reached. Raise the limit or reset the counter in Settings, then copy the link again.`,
+      duration: 8000,
+    })
+    return
+  }
+  if (!reserveSmartDlSlot(id, 'clipboard')) return
 
   console.log(`[SmartDL] Detected YouTube URL in clipboard: ${url}`)
-  startSmartDownload(id, url)
+  startSmartDownload(id, url, null, 'clipboard')
 }
 
 function startClipboardWatcher() {
@@ -5007,16 +5023,54 @@ function isActiveSmartDownload(videoId) {
   return [...smartDownloads.values()].some(d => d.videoId === videoId && d.status !== 'failed' && d.status !== 'cancelled')
 }
 
-// Concurrency + total limit are configured via settings (smartDlConcurrency,
-// smartDlLimit). smartDlCount is a PERSISTENT counter of smart downloads started
-// across all sessions, so the total number of smart downloads can never exceed
-// the chosen limit (it is not reset per session).
+// Concurrency + limit are configured via settings (smartDlConcurrency,
+// smartDlLimit). Each SOURCE keeps its own persistent counter — smartDlCount for
+// the For You feed and smartDlClipboardCount for the clipboard — so one source
+// can never exhaust the other's budget. Counters persist across sessions (they
+// are not reset per session); a failed or cancelled download releases its slot.
+
+// True if this source's cap has been reached.
+function smartDlLimitReached(source = 'fyp') {
+  const limit = getSmartDlLimit()
+  if (limit <= 0) return false
+  return smartDlCountFor(source) >= limit
+}
+
+function smartDlCountFor(source) {
+  const key = source === 'clipboard' ? 'smartDlClipboardCount' : 'smartDlCount'
+  const n = parseInt(settingsCache[key], 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// Reserve one slot against this source's cap. Only one reservation may be made
+// per video id; returns true if the download is allowed to proceed.
+function reserveSmartDlSlot(videoId, source = 'fyp') {
+  if (smartDlLimitReached(source)) return false
+  if (processedUrls.has(videoId)) return false
+  processedUrls.set(videoId, { via: source, detectedAt: Date.now() })
+  const key = source === 'clipboard' ? 'smartDlClipboardCount' : 'smartDlCount'
+  const next = smartDlCountFor(source) + 1
+  saveSettings({ [key]: next })
+  console.log(`[SmartDL] Reserved ${source} slot (${next}/${getSmartDlLimit() || 'unlimited'}) for: ${videoId}`)
+  return true
+}
+
+// Hand a slot back when a download did not finish, so a failed or cancelled
+// attempt doesn't silently burn the budget and the same link can be retried.
+function releaseSmartDlSlot(videoId, source = 'fyp') {
+  if (!videoId) return
+  processedUrls.delete(videoId)
+  const key = source === 'clipboard' ? 'smartDlClipboardCount' : 'smartDlCount'
+  const cur = smartDlCountFor(source)
+  if (cur > 0) saveSettings({ [key]: cur - 1 })
+}
+
 const fypQueued = []          // videoIds waiting to be downloaded
 const fypActive = new Set()   // videoIds currently downloading
 let lastFypCursor = 0
 const fypSeen = new Set()     // ids we've already queued/downloaded this session
 
-function getFypLimit() {
+function getSmartDlLimit() {
   const n = parseInt(settingsCache.smartDlLimit, 10)
   return Number.isFinite(n) && n > 0 ? n : 0
 }
@@ -5024,29 +5078,6 @@ function getFypLimit() {
 function getFypConcurrency() {
   const n = parseInt(settingsCache.smartDlConcurrency, 10)
   return Number.isFinite(n) && n > 0 ? Math.min(5, n) : 1
-}
-
-// Total smart downloads started so far (persisted across sessions).
-function getSmartDlCount() {
-  const n = parseInt(settingsCache.smartDlCount, 10)
-  return Number.isFinite(n) && n > 0 ? n : 0
-}
-
-// True if the total smart-download cap has been reached.
-function smartDlLimitReached() {
-  const limit = getFypLimit()
-  return limit > 0 && getSmartDlCount() >= limit
-}
-
-// Reserve one slot against the persistent total cap. Only one reservation may
-// be made per video id; returns true if the download is allowed to proceed.
-function reserveSmartDlSlot(videoId) {
-  if (smartDlLimitReached()) return false
-  if (processedUrls.has(videoId)) return false
-  processedUrls.set(videoId, { via: 'smart', detectedAt: Date.now() })
-  saveSettings({ smartDlCount: getSmartDlCount() + 1 })
-  console.log(`[SmartDL] Reserved slot (total ${getSmartDlCount()}) for: ${videoId}`)
-  return true
 }
 
 function pumpFypQueue() {
@@ -5125,7 +5156,14 @@ function getSmartDlStatus() {
       })
     }
   })
-  return { enabled: smartDlEnabled, clipboard: smartDlClipboard, active }
+  return {
+    enabled: smartDlEnabled,
+    clipboard: smartDlClipboard,
+    active,
+    count: smartDlCountFor('fyp'),
+    clipboardCount: smartDlCountFor('clipboard'),
+    limit: getSmartDlLimit(),
+  }
 }
 
 function getSmartDlHistory() {
@@ -5691,6 +5729,14 @@ function setupIPC() {
     else stopClipboardWatcher()
     console.log('[IPC] smart-dl-clipboard-toggle:', smartDlClipboard)
     return { enabled: smartDlEnabled, clipboard: smartDlClipboard }
+  })
+
+  // Reset the per-source smart-download counters (and let any URL be retried).
+  ipcMain.handle('smart-dl-reset-counts', () => {
+    saveSettings({ smartDlCount: 0, smartDlClipboardCount: 0 })
+    processedUrls.clear()
+    console.log('[IPC] smart-dl-reset-counts')
+    return { count: 0, clipboardCount: 0, limit: getSmartDlLimit() }
   })
 
   ipcMain.handle('smart-dl-status', () => getSmartDlStatus())

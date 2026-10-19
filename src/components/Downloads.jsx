@@ -19,12 +19,13 @@ function SectionHeader({ title, count }) {
 }
 
 // Independent on/off switch for one smart-download source.
-function SourceToggle({ on, onChange, disabled, title, description }) {
+function SourceToggle({ on, onChange, disabled, title, description, note }) {
   return (
     <div className="flex items-center justify-between gap-3 bg-white dark:bg-yt-dark rounded-xl border border-gray-200 dark:border-gray-800 px-4 py-3">
       <div className="min-w-0">
         <p className="text-sm font-medium">{title}</p>
         <p className="text-xs text-gray-500 dark:text-gray-400">{description}</p>
+        {note && <p className="text-xs text-amber-500 dark:text-amber-400 mt-1">{note}</p>}
       </div>
       <button
         onClick={onChange}
@@ -284,10 +285,15 @@ function TabButton({ active, onClick, children, badge }) {
 
 export default function Downloads() {
   const { activeDownloads, completedDownloads, hasHydrated, formatBytes } = useDownloads()
-  const { enabled: smartDlEnabled, clipboard: smartDlClipboard, toggleSmartDownload, toggleClipboard, activeDownloads: smartDlActive, history: smartDlHistory } = useSmartDownloads()
+  const { enabled: smartDlEnabled, clipboard: smartDlClipboard, counts, toggleSmartDownload, toggleClipboard, activeDownloads: smartDlActive, history: smartDlHistory } = useSmartDownloads()
   const { settings } = useSettings()
   const [nowPlaying, setNowPlaying] = useState(null)
   const [tab, setTab] = useState('active')
+
+  const smartDlMax = counts?.limit || 0
+  const fypFull = smartDlMax > 0 && (counts?.fyp || 0) >= smartDlMax
+  const clipboardFull = smartDlMax > 0 && (counts?.clipboard || 0) >= smartDlMax
+  const limitNote = 'Limit reached — reset the counter or raise the limit in Settings'
 
   const handlePlayInApp = async (download) => {
     if (!download?.filePath) return
@@ -370,12 +376,14 @@ export default function Downloads() {
                   onChange={() => { toggleSmartDownload().catch(() => {}) }}
                   title="For You recommendations"
                   description="Automatically download new videos from your For You page."
+                  note={smartDlEnabled && fypFull ? limitNote : ''}
                 />
                 <SourceToggle
                   on={smartDlClipboard}
                   onChange={() => { toggleClipboard().catch(() => {}) }}
                   title="Download from clipboard"
                   description="Automatically download YouTube links you copy to the clipboard."
+                  note={smartDlClipboard && clipboardFull ? limitNote : ''}
                 />
               </div>
 

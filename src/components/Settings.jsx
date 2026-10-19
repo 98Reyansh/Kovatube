@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useSettings, ACCENT_PRESETS } from '../context/SettingsContext'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
@@ -46,7 +47,16 @@ export default function Settings() {
   const { settings, hydrated, updateSetting } = useSettings()
   const { addToast } = useToast()
   const { signedIn, account, signingIn, signIn, signOut } = useAuth()
-  const { enabled: smartDlEnabled, clipboard: smartDlClipboard, toggleSmartDownload, toggleClipboard } = useSmartDownloads()
+  const { enabled: smartDlEnabled, clipboard: smartDlClipboard, counts, toggleSmartDownload, toggleClipboard, refreshStatus, resetCounts } = useSmartDownloads()
+
+  // Keep the per-source usage in the limit row accurate while this page is open.
+  useEffect(() => { refreshStatus() }, [refreshStatus])
+
+  const handleResetCounts = async () => {
+    const res = await resetCounts()
+    if (res) addToast('success', 'Smart download counters reset', 3000)
+    else addToast('error', 'Could not reset the counters', 3000)
+  }
 
   const handleSignIn = async () => {
     const ok = await signIn()
@@ -323,7 +333,7 @@ export default function Settings() {
 
             <SettingRow
               title="Smart download limit"
-              description="Max smart downloads in total (0 = unlimited; not reset per session)"
+              description={`Max smart downloads per source (0 = unlimited; not reset per session). Used — For You: ${counts.fyp}/${counts.limit || '∞'} · Clipboard: ${counts.clipboard}/${counts.limit || '∞'}`}
               icon={
                 <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -356,6 +366,24 @@ export default function Settings() {
                 onChange={(e) => updateSetting('smartDlConcurrency', parseInt(e.target.value || '1', 10))}
                 className="w-24 px-3 py-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm focus:outline-none focus:ring-2 focus:ring-yt-red/50 hover:border-yt-red/40"
               />
+            </SettingRow>
+
+            <SettingRow
+              title="Reset smart download counters"
+              description="Set both per-source counters back to 0 so downloads are allowed again (also lets previously tried links be retried)"
+              icon={
+                <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              }
+            >
+              <button
+                onClick={handleResetCounts}
+                disabled={counts.fyp === 0 && counts.clipboard === 0}
+                className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 hover:border-yt-red/50 hover:text-yt-red transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Reset
+              </button>
             </SettingRow>
           </section>
 
