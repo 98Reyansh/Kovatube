@@ -770,6 +770,12 @@ input[type='range'].range-minimal::-webkit-slider-thumb {
 html.dark input[type='range'].range-minimal::-webkit-slider-thumb { border-color: #222; }
 input[type='range'].range-minimal::-webkit-slider-thumb:hover { transform: scale(1.25); }
 
+/* Range on the dark full-screen player backdrop (any theme). */
+input[type='range'].range-minimal.range-on-dark,
+html.dark input[type='range'].range-minimal.range-on-dark { background: rgb(255 255 255 / 0.18); }
+input[type='range'].range-minimal.range-on-dark::-webkit-slider-thumb,
+html.dark input[type='range'].range-minimal.range-on-dark::-webkit-slider-thumb { border-color: rgb(255 255 255 / 0.9); }
+
 /* ── Music grid cards ─────────────────────────────────────── */
 .music-card {
   overflow: hidden;
