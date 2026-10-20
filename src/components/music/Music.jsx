@@ -5,6 +5,7 @@ import { useDownloads } from '../../context/DownloadContext'
 import MusicCard from './MusicCard'
 import TrackRow from './TrackRow'
 import DownloadedMusic from './DownloadedMusic'
+import { isAudioDownload } from '../../lib/media'
 
 const TABS = [
   { id: 'home', label: 'Home' },
@@ -13,8 +14,6 @@ const TABS = [
   { id: 'library', label: 'Library' },
   { id: 'downloaded', label: 'Downloaded' },
 ]
-
-const AUDIO_RE = /\.(mp3|m4a|aac|opus|ogg|oga|flac|wav)$/i
 
 const FILTERS = [
   { id: '', label: 'All' },
@@ -182,7 +181,7 @@ export default function Music() {
 
   const searchTracks = results?.items?.filter(i => i.videoId) || []
   const searchCards = results?.items?.filter(i => !i.videoId && i.browseId) || []
-  const musicDownloadCount = completedDownloads.filter(d => d.isAudio || AUDIO_RE.test(d.fileName || '')).length
+  const musicDownloadCount = completedDownloads.filter(isAudioDownload).length
 
   return (
     <div className="animate-fade-in">

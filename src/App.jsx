@@ -12,6 +12,7 @@ import NewVideos from './components/NewVideos'
 import SavedVideos from './components/SavedVideos'
 import Music from './components/music/Music'
 import MusicBrowse from './components/music/MusicBrowse'
+import MusicDownloads from './components/music/MusicDownloads'
 import IntroLoader from './components/IntroLoader'
 import { SettingsProvider } from './context/SettingsContext'
 import { SearchProvider, useSearch } from './context/SearchContext'
@@ -68,6 +69,7 @@ function AnimatedRoutes() {
             <Route path="/video/:id" element={<VideoDetail />} />
             <Route path="/channel/:name" element={<Channel />} />
             <Route path="/downloads" element={<Downloads />} />
+            <Route path="/downloads/music" element={<MusicDownloads />} />
             <Route path="/shorts" element={<ShortsFeed />} />
             <Route path="/subscriptions" element={<Subscriptions />} />
             <Route path="/new" element={<NewVideos />} />

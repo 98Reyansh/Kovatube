@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useDownloads } from '../context/DownloadContext'
 import { useSmartDownloads } from '../context/SmartDownloadContext'
 import { useSettings } from '../context/SettingsContext'
+import { isAudioDownload } from '../lib/media'
+import DownloadsTabs from './DownloadsTabs'
 import LocalPlayer from './LocalPlayer'
 
 function SectionHeader({ title, count }) {
@@ -47,7 +49,7 @@ function SourceToggle({ on, onChange, disabled, title, description, note }) {
   )
 }
 
-function ActiveDownloadCard({ download }) {
+export function ActiveDownloadCard({ download }) {
   const { cancelDownload, formatBytes, formatSpeed } = useDownloads()
   const progress = download.progress || 0
   const transferred = formatBytes(download.transferredBytes)
@@ -104,7 +106,7 @@ function CompletedDownloadTile({ download, onPlayInApp }) {
   const { showInFolder, formatBytes } = useDownloads()
   const size = formatBytes(download.totalBytes)
   const date = download.completedAt ? new Date(download.completedAt).toLocaleDateString() : ''
-  const isAudio = (download.quality || '').toLowerCase().includes('audio') || (download.quality || '').toLowerCase().includes('mp3') || (download.quality || '').toLowerCase().includes('m4a')
+  const isAudio = isAudioDownload(download)
 
   return (
     <div className="group flex flex-col hover-lift rounded-xl">
@@ -290,6 +292,11 @@ export default function Downloads() {
   const [nowPlaying, setNowPlaying] = useState(null)
   const [tab, setTab] = useState('active')
 
+  // This page is only for videos. Songs have their own page (Music → Downloaded,
+  // and /downloads/music).
+  const videoActiveDownloads = activeDownloads.filter((d) => !isAudioDownload(d))
+  const videoCompletedDownloads = completedDownloads.filter((d) => !isAudioDownload(d))
+
   const smartDlMax = counts?.limit || 0
   const fypFull = smartDlMax > 0 && (counts?.fyp || 0) >= smartDlMax
   const clipboardFull = smartDlMax > 0 && (counts?.clipboard || 0) >= smartDlMax
@@ -332,19 +339,22 @@ export default function Downloads() {
     <>
       <div className="max-w-5xl mx-auto space-y-8">
         {/* Page header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2.5">
-              Downloads
-              <span className="w-1 h-6 bg-yt-red rounded-full" />
-            </h1>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Manage your downloaded videos and music</p>
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold flex items-center gap-2.5">
+                Video Downloads
+                <span className="w-1 h-6 bg-yt-red rounded-full" />
+              </h1>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Downloaded videos on this device</p>
+            </div>
+            <DownloadsTabs active="videos" />
           </div>
-          <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800/80 p-1 rounded-xl">
-            <TabButton active={tab === 'active'} onClick={() => setTab('active')} badge={activeDownloads.length}>
+          <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-800/80 p-1 rounded-xl w-fit">
+            <TabButton active={tab === 'active'} onClick={() => setTab('active')} badge={videoActiveDownloads.length}>
               Active
             </TabButton>
-            <TabButton active={tab === 'completed'} onClick={() => setTab('completed')} badge={completedDownloads.length}>
+            <TabButton active={tab === 'completed'} onClick={() => setTab('completed')} badge={videoCompletedDownloads.length}>
               Completed
             </TabButton>
           </div>
@@ -353,10 +363,10 @@ export default function Downloads() {
         {tab === 'active' && (
           <>
             <section>
-              <SectionHeader title="Active Downloads" count={activeDownloads.length} />
-              {activeDownloads.length > 0 ? (
+              <SectionHeader title="Active Downloads" count={videoActiveDownloads.length} />
+              {videoActiveDownloads.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {activeDownloads.map(dl => <ActiveDownloadCard key={dl.id} download={dl} />)}
+                  {videoActiveDownloads.map(dl => <ActiveDownloadCard key={dl.id} download={dl} />)}
                 </div>
               ) : (
                 <EmptyBox
@@ -422,19 +432,19 @@ export default function Downloads() {
 
         {tab === 'completed' && (
           <section>
-            <SectionHeader title="Completed Downloads" count={completedDownloads.length} />
-            {completedDownloads.length > 0 && (
+            <SectionHeader title="Completed Downloads" count={videoCompletedDownloads.length} />
+            {videoCompletedDownloads.length > 0 && (
               <div className="flex items-center gap-2.5 mt-2 mb-6 text-sm text-gray-500 dark:text-gray-400">
                 <svg className="w-4 h-4 text-yt-red shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
                 <span>
-                  <span className="font-semibold text-gray-700 dark:text-gray-200">{completedDownloads.length}</span> videos · Total size{' '}
-                  <span className="font-semibold text-gray-700 dark:text-gray-200">{formatBytes(completedDownloads.reduce((s, d) => s + (d.totalBytes || 0), 0))}</span>
+                  <span className="font-semibold text-gray-700 dark:text-gray-200">{videoCompletedDownloads.length}</span> {videoCompletedDownloads.length === 1 ? 'video' : 'videos'} · Total size{' '}
+                  <span className="font-semibold text-gray-700 dark:text-gray-200">{formatBytes(videoCompletedDownloads.reduce((s, d) => s + (d.totalBytes || 0), 0))}</span>
                 </span>
               </div>
             )}
-            {completedDownloads.length > 0 ? (
+            {videoCompletedDownloads.length > 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
-                {completedDownloads.map((dl, i) => (
+                {videoCompletedDownloads.map((dl, i) => (
                   <div key={dl.id} className="stagger-item hover-lift">
                     <CompletedDownloadTile download={dl} onPlayInApp={handlePlayInApp} />
                   </div>
@@ -444,8 +454,8 @@ export default function Downloads() {
               <EmptyBox
                 accent="bg-yt-red/10"
                 icon={<svg className="w-8 h-8 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>}
-                title="No completed downloads"
-                message={`${activeDownloads.length ? 'Your current download will show up here once finished.' : 'Download a video and it will appear here.'}`}
+                title="No downloaded videos"
+                message={`${videoActiveDownloads.length ? 'Your current download will show up here once finished.' : 'Download a video and it will appear here. Songs live on the Music downloads page.'}`}
               />
             )}
           </section>

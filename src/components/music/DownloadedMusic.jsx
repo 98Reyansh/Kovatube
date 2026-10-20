@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQueue } from '../../context/QueueContext'
 import { useDownloads } from '../../context/DownloadContext'
-
-const AUDIO_RE = /\.(mp3|m4a|aac|opus|ogg|oga|flac|wav)$/i
+import { isAudioDownload } from '../../lib/media'
 
 function fmtDur(s) {
   if (!s) return ''
@@ -339,7 +338,7 @@ export default function DownloadedMusic() {
   }
 
   const songs = completedDownloads
-    .filter((d) => d.isAudio || AUDIO_RE.test(d.fileName || ''))
+    .filter((d) => isAudioDownload(d))
     .filter((d) => !playlistFiles.has(d.fileName) && !playlistFiles.has(d.filePath))
     .map((d) => ({
       id: d.id || d.filePath,

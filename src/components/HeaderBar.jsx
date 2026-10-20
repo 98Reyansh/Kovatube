@@ -5,6 +5,7 @@ import { useSearch } from '../context/SearchContext'
 import { useSmartDownloads } from '../context/SmartDownloadContext'
 import { useSubscriptions } from '../context/SubscriptionsContext'
 import { useDownloads } from '../context/DownloadContext'
+import { isAudioDownload } from '../lib/media'
 import { useAuth } from '../context/AuthContext'
 import { useSaved } from '../context/SavedContext'
 
@@ -14,6 +15,7 @@ export default function HeaderBar() {
   const { search, loading, clearSearch } = useSearch()
   const { subscriptions } = useSubscriptions()
   const { activeDownloads } = useDownloads()
+  const videoDownloadsActive = activeDownloads.filter((d) => !isAudioDownload(d)).length
   const { saved: savedVideos } = useSaved()
   const { enabled: smartDlEnabled, clipboard: smartDlClipboard, activeDownloads: smartDlActive, toggleSmartDownload, toggleClipboard } = useSmartDownloads()
   const location = useLocation()
@@ -133,7 +135,7 @@ export default function HeaderBar() {
         <Link
           to="/downloads"
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-            location.pathname === '/downloads'
+            location.pathname.startsWith('/downloads')
               ? 'bg-black/[0.06] dark:bg-white/8 text-gray-900 dark:text-white'
               : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/6'
           }`}
@@ -142,9 +144,9 @@ export default function HeaderBar() {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
           </svg>
           Downloads
-          {activeDownloads.length > 0 && (
+          {videoDownloadsActive > 0 && (
             <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-yt-red text-white text-[10px] font-bold flex items-center justify-center">
-              {activeDownloads.length > 99 ? '99+' : activeDownloads.length}
+              {videoDownloadsActive > 99 ? '99+' : videoDownloadsActive}
             </span>
           )}
         </Link>
