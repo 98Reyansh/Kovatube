@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useSubscriptions } from '../context/SubscriptionsContext'
 import { useDownloads } from '../context/DownloadContext'
 import { useSaved } from '../context/SavedContext'
+import { useWatchLater } from '../context/WatchLaterContext'
 import { useToast } from '../context/ToastContext'
 
 // "More options" ellipsis menu shown under video cards.
@@ -12,6 +13,7 @@ export default function VideoMenu({ video }) {
   const { isSubscribed, toggleSubscription } = useSubscriptions()
   const { startDownload, activeDownloads } = useDownloads()
   const { isSaved, toggleSave } = useSaved()
+  const { isInWatchLater, toggleWatchLater } = useWatchLater()
   const { addToast } = useToast()
 
   useEffect(() => {
@@ -29,6 +31,7 @@ export default function VideoMenu({ video }) {
   if (!video?.id) return null
 
   const saved = isSaved(video.id)
+  const queued = isInWatchLater(video.id)
   const subbed = video.channel ? isSubscribed(video.channel) : false
   const downloading = activeDownloads.some(d => d.videoId === video.id && d.status !== 'failed')
 
@@ -38,6 +41,13 @@ export default function VideoMenu({ video }) {
     stop(e)
     toggleSave(video)
     addToast('success', saved ? 'Removed from Saved videos' : 'Saved to your list', 2500)
+    setOpen(false)
+  }
+
+  const handleWatchLater = (e) => {
+    stop(e)
+    toggleWatchLater(video)
+    addToast('success', queued ? 'Removed from Watch later' : 'Added to Watch later', 2500)
     setOpen(false)
   }
 
@@ -91,13 +101,21 @@ export default function VideoMenu({ video }) {
       {open && (
         <div
           role="menu"
-          className="absolute bottom-full right-0 mb-1.5 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-xl ring-1 ring-black/5 dark:ring-white/5 py-1 z-40 pop-in pop-in-bottom menu-stagger"
+          className="absolute bottom-full right-0 mb-1.5 w-56 bg-white dark:bg-gray-800 rounded-xl shadow-xl ring-1 ring-black/5 dark:ring-white/5 py-1 z-40 pop-in pop-in-bottom menu-stagger"
         >
           <button role="menuitem" onClick={handleSave} className={itemClass}>
             <svg className="w-4 h-4 shrink-0" fill={saved ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
             </svg>
             {saved ? 'Remove from Saved' : 'Save video'}
+          </button>
+
+          <button role="menuitem" onClick={handleWatchLater} className={itemClass}>
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="9" strokeWidth={2} />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 7v5l3 2" />
+            </svg>
+            {queued ? 'Remove from Watch later' : 'Watch later'}
           </button>
 
           <button role="menuitem" onClick={handleDownload} className={itemClass}>

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import SubscribeButton from './SubscribeButton'
 import { prewarmOnHover } from '../lib/prewarm'
+import VideoMenu from './VideoMenu'
 
 function SkeletonCard() {
   return (
@@ -15,33 +16,29 @@ function SkeletonCard() {
 
 function VideoCard({ video }) {
   return (
-    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col hover-lift rounded-xl">
-      <div className="relative">
-        <div className="relative aspect-video bg-gray-200 dark:bg-gray-800 rounded-xl overflow-hidden shadow-sm group-hover:shadow-lg transition-shadow">
+    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col">
+      <div className="relative aspect-video bg-neutral-200 dark:bg-neutral-900 rounded-md overflow-hidden">
           {video.thumbnail ? (
-            <img src={video.thumbnail} alt={video.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" loading="lazy" />
+            <img src={video.thumbnail} alt={video.title} className="w-full h-full object-cover" loading="lazy" />
           ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gray-100 dark:bg-gray-800">
-              <svg className="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-full h-full flex items-center justify-center">
+              <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
               </svg>
             </div>
           )}
           {video.duration && (
-            <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-white text-xs font-medium px-1.5 py-0.5 rounded">{video.duration}</span>
+            <span className="absolute bottom-1.5 right-1.5 bg-black/75 text-white text-[11px] px-1 py-0.5 rounded">{video.duration}</span>
           )}
-          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-            <span className="w-12 h-12 bg-yt-red/90 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-              <svg className="w-6 h-6 translate-x-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-            </span>
-          </div>
-        </div>
       </div>
-      <div className="flex-1 min-w-0 mt-3">
-        <h3 className="font-medium text-[15px] leading-snug line-clamp-2 group-hover:text-yt-red dark:group-hover:text-yt-red-light transition-colors">{video.title}</h3>
-        <p className="text-sm text-gray-600 dark:text-gray-400 mt-0.5">
-          {video.views}{video.publishedTime ? ` · ${video.publishedTime}` : ''}
-        </p>
+      <div className="flex-1 min-w-0 mt-2.5">
+        <h3 className="font-medium text-[14px] leading-snug line-clamp-2">{video.title}</h3>
+        <div className="flex items-center justify-between gap-2 mt-0.5">
+          <p className="text-sm text-gray-600 dark:text-gray-400 truncate">
+            {video.views}{video.publishedTime ? ` · ${video.publishedTime}` : ''}
+          </p>
+          <VideoMenu video={video} />
+        </div>
       </div>
     </Link>
   )
@@ -109,7 +106,7 @@ export default function Channel() {
       <div className="max-w-5xl mx-auto space-y-6">
         <div className="h-40 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />
         <div className="h-8 bg-gray-200 dark:bg-gray-800 rounded w-64 animate-pulse" />
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
+        <div className="reveal-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
           {Array.from({ length: 8 }).map((_, i) => <SkeletonCard key={i} />)}
         </div>
       </div>
@@ -134,30 +131,30 @@ export default function Channel() {
       <div className="flex items-center justify-between">
         <button
           onClick={() => window.history.back()}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors hover-ring"
+          className="flex items-center gap-1.5 text-[13px] text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
           Back
         </button>
-        <Link to="/subscriptions" className="px-3 py-2 rounded-lg text-sm font-medium bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors hover-ring">
+        <Link to="/subscriptions" className="text-[13px] text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white">
           Subscriptions
         </Link>
       </div>
 
       {/* Banner */}
       {channel.banner ? (
-        <div className="relative h-40 md:h-56 rounded-2xl overflow-hidden bg-gray-200 dark:bg-gray-800">
+        <div className="relative h-36 md:h-48 rounded-md overflow-hidden bg-neutral-200 dark:bg-neutral-900">
           <img src={channel.banner} alt="" className="w-full h-full object-cover" loading="lazy" />
         </div>
       ) : (
-        <div className="h-28 md:h-40 rounded-2xl bg-gradient-to-r from-yt-red/40 via-yt-red/20 to-pink-500/30" />
+        <div className="h-28 md:h-40 rounded-md bg-black/[0.04] dark:bg-white/[0.04]" />
       )}
 
       {/* Channel header */}
       <div className="flex flex-col sm:flex-row items-start gap-4">
-        <div className="w-20 h-20 sm:w-24 sm:h-24 shrink-0 rounded-full bg-gradient-to-br from-yt-red to-pink-500 flex items-center justify-center text-3xl font-semibold text-white overflow-hidden ring-4 ring-white dark:ring-yt-dark">
+        <div className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 rounded-full bg-black/[0.06] dark:bg-white/10 flex items-center justify-center text-2xl font-medium text-gray-700 dark:text-gray-200 overflow-hidden">
           {channel.avatar ? (
             <img src={channel.avatar} alt={channel.name} className="w-full h-full object-cover" loading="lazy" />
           ) : (
@@ -165,7 +162,7 @@ export default function Channel() {
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <h1 className="text-2xl font-bold leading-tight">{channel.name}</h1>
+          <h1 className="text-xl font-medium leading-tight">{channel.name}</h1>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-sm text-gray-500 dark:text-gray-400">
             {channel.handle && <span>{channel.handle}</span>}
             {channel.subscribers && <span>{channel.subscribers}</span>}
@@ -182,13 +179,12 @@ export default function Channel() {
 
       {/* Videos */}
       <div>
-        <div className="flex items-center gap-2.5 mb-4">
-          <span className="w-1 h-6 bg-yt-red rounded-full" />
-          <h2 className="text-xl font-semibold">Videos</h2>
+        <div className="mb-3">
+          <h2 className="text-base font-medium">Videos</h2>
           {channel.videos && <span className="text-sm text-gray-500 dark:text-gray-400">({channel.videos.length} loaded)</span>}
         </div>
         {channel.videos && channel.videos.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
+          <div className="reveal-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
             {channel.videos.map((v) => (
               <VideoCard key={v.id} video={v} />
             ))}

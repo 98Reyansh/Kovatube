@@ -8,6 +8,29 @@ import { useDownloads } from '../context/DownloadContext'
 import { isAudioDownload } from '../lib/media'
 import { useAuth } from '../context/AuthContext'
 import { useSaved } from '../context/SavedContext'
+import { useWatchLater } from '../context/WatchLaterContext'
+
+function NavItem({ to, active, onClick, children, count }) {
+  return (
+    <Link
+      to={to}
+      onClick={onClick}
+      data-active={active ? 'true' : 'false'}
+      className={`nav-underline px-1.5 py-1 text-[13px] whitespace-nowrap transition-colors ${
+        active
+          ? 'text-gray-900 dark:text-white'
+          : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100'
+      }`}
+    >
+      <span>
+        {children}
+        {count > 0 && (
+          <span className="ml-1 text-[11px] tabular-nums text-gray-400">{count > 99 ? '99+' : count}</span>
+        )}
+      </span>
+    </Link>
+  )
+}
 
 export default function HeaderBar() {
   const { settings, updateSetting } = useSettings()
@@ -17,6 +40,7 @@ export default function HeaderBar() {
   const { activeDownloads } = useDownloads()
   const videoDownloadsActive = activeDownloads.filter((d) => !isAudioDownload(d)).length
   const { saved: savedVideos } = useSaved()
+  const { videos: watchLater } = useWatchLater()
   const { enabled: smartDlEnabled, clipboard: smartDlClipboard, activeDownloads: smartDlActive, toggleSmartDownload, toggleClipboard } = useSmartDownloads()
   const location = useLocation()
   const navigate = useNavigate()
@@ -48,26 +72,26 @@ export default function HeaderBar() {
   }
 
   return (
-    <header className="sticky top-0 z-30 flex items-center gap-2 px-3 py-2 bg-white dark:bg-yt-dark border-b border-gray-200/50 dark:border-gray-800/40 animate-slide-down">
-      <Link to="/" onClick={handleLogoClick} className="flex items-center gap-2 shrink-0 group hover-lift rounded-lg" aria-label="Home">
-        <svg className="w-7 h-7 text-yt-red transition-transform duration-200 group-hover:scale-105" viewBox="0 0 24 24" fill="currentColor">
+    <header className="sticky top-0 z-30 flex items-center gap-5 px-5 h-12 bg-white dark:bg-yt-dark border-b border-black/[0.06] dark:border-white/[0.06] animate-slide-down">
+      <Link to="/" onClick={handleLogoClick} className="flex items-center shrink-0 group" aria-label="Home">
+        <svg className="w-5 h-5 text-yt-red transition-transform duration-300 group-hover:scale-125 group-hover:-rotate-6" viewBox="0 0 24 24" fill="currentColor">
           <path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zM9 16V8l8 3.993L9 16z"/>
         </svg>
       </Link>
 
-      <form onSubmit={handleSubmit} className="flex-1 max-w-xl mx-2">
+      <form onSubmit={handleSubmit} className="flex-1 min-w-[8rem] max-w-md">
         <div className="relative">
           <input
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             placeholder="Search"
-            className="w-full px-4 py-1.5 pr-9 rounded-full bg-black/[0.05] dark:bg-white/[0.08] border border-transparent hover:bg-black/[0.08] dark:hover:bg-white/[0.12] focus:bg-black/[0.03] dark:focus:bg-white/[0.06] focus:ring-1 focus:ring-yt-red/30 outline-none transition-all duration-150 text-[14px]"
+            className="search-field w-full px-3 py-1 pr-8 rounded-md bg-transparent border border-black/[0.08] dark:border-white/[0.1] outline-none text-[13px]"
           />
           <button
             type="submit"
             disabled={loading}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-yt-red dark:hover:text-yt-red-light disabled:opacity-50"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50"
           >
             {loading ? (
               <svg className="w-4.5 h-4.5 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -83,95 +107,52 @@ export default function HeaderBar() {
         </div>
       </form>
 
-      <nav className="flex items-center gap-0.5 ml-1" aria-label="Main navigation">
-        <Link
-          to="/"
-          onClick={handleLogoClick}
-          className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-            location.pathname === '/'
-              ? 'bg-black/[0.06] dark:bg-white/8 text-gray-900 dark:text-white'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/6'
-          }`}
-        >
-          For You
-        </Link>
-        <Link
-          to="/shorts"
-          className={`hidden sm:px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-            location.pathname === '/shorts'
-              ? 'bg-black/[0.06] dark:bg-white/8 text-gray-900 dark:text-white'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/6'
-          }`}
-        >
-          Shorts
-        </Link>
-        <Link
-          to="/music"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-            location.pathname.startsWith('/music')
-              ? 'bg-black/[0.06] dark:bg-white/8 text-gray-900 dark:text-white'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/6'
-          }`}
-        >
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" /></svg>
-          Music
-        </Link>
-        <Link
-          to="/subscriptions"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-            location.pathname === '/subscriptions'
-              ? 'bg-black/[0.06] dark:bg-white/8 text-gray-900 dark:text-white'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/6'
-          }`}
-        >
-          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M20 8H4V6h16v2zm-2-6H6v2h12V2zm4 10v8a2 2 0 01-2 2H4a2 2 0 01-2-2v-8a2 2 0 012-2h16a2 2 0 012 2zm-6 4l-6-3.27v6.53L16 16z" /></svg>
-          Subscriptions
-          {subscriptions.length > 0 && (
-            <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-yt-red text-white text-[10px] font-bold flex items-center justify-center">
-              {subscriptions.length > 99 ? '99+' : subscriptions.length}
-            </span>
-          )}
-        </Link>
-        <Link
-          to="/downloads"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-            location.pathname.startsWith('/downloads')
-              ? 'bg-black/[0.06] dark:bg-white/8 text-gray-900 dark:text-white'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-black/[0.04] dark:hover:bg-white/6'
-          }`}
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-          </svg>
-          Downloads
-          {videoDownloadsActive > 0 && (
-            <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-yt-red text-white text-[10px] font-bold flex items-center justify-center">
-              {videoDownloadsActive > 99 ? '99+' : videoDownloadsActive}
-            </span>
-          )}
-        </Link>
+      <nav className="flex items-center gap-3 shrink-0" aria-label="Main navigation">
+        <NavItem to="/" active={location.pathname === '/'} onClick={handleLogoClick}>For You</NavItem>
+        <NavItem to="/shorts" active={location.pathname === '/shorts'}>Shorts</NavItem>
+        <NavItem to="/music" active={location.pathname.startsWith('/music')}>Music</NavItem>
+        <NavItem to="/subscriptions" active={location.pathname === '/subscriptions'} count={subscriptions.length}>Subscriptions</NavItem>
+        <NavItem to="/downloads" active={location.pathname.startsWith('/downloads')} count={videoDownloadsActive}>Downloads</NavItem>
       </nav>
 
       <div className="flex items-center gap-1 ml-auto">
         <button
           onClick={() => toggleSmartDownload()}
-          className={`relative p-2 rounded-full transition-colors hover-ring ${
+          className={`relative p-1.5 transition-colors ${
             smartDlEnabled
-              ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
-              : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+              ? 'text-gray-900 dark:text-white'
+              : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
           }`}
           title={smartDlEnabled ? 'Smart Downloads ON — auto-downloading For You recommendations' : 'Smart Downloads OFF — click to enable'}
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
           </svg>
-          {smartDlEnabled && smartDlActive.length > 0 && (
-            <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse" />
-          )}
           {smartDlEnabled && (
-            <span className="absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 bg-green-400 rounded-full" />
+            <span className={`absolute top-1 right-1 w-1.5 h-1.5 rounded-full ${smartDlActive.length > 0 ? 'bg-yt-red' : 'bg-gray-400'}`} />
           )}
         </button>
+
+        <Link
+          to="/watch-later"
+          className={`relative p-1.5 transition-colors ${
+            location.pathname === '/watch-later'
+              ? 'text-gray-900 dark:text-white'
+              : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+          }`}
+          title="Watch later"
+          aria-label="Watch later"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="9" strokeWidth={1.75} />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M12 7v5l3 2" />
+          </svg>
+          {watchLater.length > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-black/80 dark:bg-white text-white dark:text-black text-[9px] font-medium flex items-center justify-center">
+              {watchLater.length > 99 ? '99+' : watchLater.length}
+            </span>
+          )}
+        </Link>
 
         {signedIn ? (
           <div className="relative" ref={accountRef}>
@@ -218,8 +199,25 @@ export default function HeaderBar() {
                     </svg>
                     Saved videos
                     {savedVideos.length > 0 && (
-                      <span className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-yt-red text-white text-[10px] font-bold flex items-center justify-center">
+                      <span className="ml-auto text-[11px] tabular-nums text-gray-400">
                         {savedVideos.length > 99 ? '99+' : savedVideos.length}
+                      </span>
+                    )}
+                  </Link>
+
+                  <Link
+                    to="/watch-later"
+                    onClick={() => setAccountOpen(false)}
+                    className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded text-xs text-gray-700 dark:text-gray-200 hover:bg-black/[0.04] dark:hover:bg-white/6 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <circle cx="12" cy="12" r="9" strokeWidth={2} />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 7v5l3 2" />
+                    </svg>
+                    Watch later
+                    {watchLater.length > 0 && (
+                      <span className="ml-auto text-[11px] tabular-nums text-gray-400">
+                        {watchLater.length > 99 ? '99+' : watchLater.length}
                       </span>
                     )}
                   </Link>
@@ -325,7 +323,7 @@ export default function HeaderBar() {
           <button
             onClick={signIn}
             disabled={signingIn}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/[0.04] dark:bg-white/6 hover:bg-black/[0.07] dark:hover:bg-white/10 transition-colors text-sm font-medium disabled:opacity-50"
+            className="px-2 py-1 text-[13px] text-gray-700 dark:text-gray-200 hover:text-black dark:hover:text-white disabled:opacity-50"
             title="Sign in with Google to load your personalized For You feed"
           >
             <svg className="w-4 h-4" viewBox="0 0 48 48">

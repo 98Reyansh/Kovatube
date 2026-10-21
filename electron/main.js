@@ -5239,9 +5239,14 @@ function getFypRefreshMs() {
   return (Number.isFinite(min) && min > 0 ? min : 60) * 60 * 1000
 }
 
-function startFypDownloader() {
+function startFypDownloader({ delayMs = 0 } = {}) {
   if (fypDlTimer) return
-  checkFypRecommendations() // kick off immediately
+  // The first scan fetches the feed again and can spawn yt-dlp. On launch that
+  // stacks on top of the window's own feed load, so wait unless the user just
+  // turned the feature on.
+  const kick = () => { if (smartDlEnabled) checkFypRecommendations() }
+  if (delayMs > 0) setTimeout(kick, delayMs)
+  else kick()
   fypDlTimer = setInterval(checkFypRecommendations, getFypRefreshMs())
   console.log(`[SmartDL] For You recommendation downloader started (${getFypRefreshMs() / 60000}min refresh interval)`)
 }
@@ -5905,9 +5910,11 @@ app.whenReady().then(async () => {
   if (ytdlpOk) {
     const ver = await checkYtdlpVersion()
     console.log(`[App] yt-dlp found: ${ver || 'unknown version'}`)
-    startYtdlpUpdateCheck()
+    // yt-dlp -U is a Python process. Running it during the first paint competes
+    // with the window, so let the app settle first.
+    setTimeout(() => startYtdlpUpdateCheck(), 45000)
     // Restore the smart-download sources that were left on (each independent).
-    if (smartDlEnabled) startFypDownloader()
+    if (smartDlEnabled) startFypDownloader({ delayMs: 30000 })
     if (smartDlClipboard) startClipboardWatcher()
   } else {
     console.warn('[App] yt-dlp not found - smart downloads will be unavailable')

@@ -4,11 +4,41 @@ import Hls from 'hls.js'
 import { useDownloads } from '../context/DownloadContext'
 import { useSettings } from '../context/SettingsContext'
 import { useSubscriptions } from '../context/SubscriptionsContext'
+import { useWatchLater } from '../context/WatchLaterContext'
+import { useToast } from '../context/ToastContext'
 import { pushMediaFocus } from '../mediaFocus'
 import VideoMenu from './VideoMenu'
 import LocalPlayer from './LocalPlayer'
 
-function NativePlayer({ id, autoPlay }) {
+// "m:ss" or "h:mm:ss" from the video page. 0 when the length isn't known yet.
+function clockToSeconds(text) {
+  if (!text || typeof text !== 'string') return 0
+  const parts = text.trim().split(':').map(Number)
+  if (!parts.length || parts.some((n) => !Number.isFinite(n))) return 0
+  return parts.reduce((total, n) => total * 60 + n, 0)
+}
+
+function seekableEnd(video) {
+  try {
+    if (video.seekable && video.seekable.length) {
+      return video.seekable.end(video.seekable.length - 1)
+    }
+  } catch { /* seekable can throw while the media is resetting */ }
+  const d = video.duration
+  return isFinite(d) && d > 0 ? d : 0
+}
+
+// The HLS relay writes the playlist as it muxes, so the media element reports a
+// length that grows during playback. Prefer the known full length until the
+// stream has actually caught up to it.
+function fullDuration(known, media) {
+  const knownSec = isFinite(known) && known > 0 ? known : 0
+  const mediaSec = isFinite(media) && media > 0 ? media : 0
+  if (knownSec > mediaSec + 1.5) return knownSec
+  return mediaSec || knownSec
+}
+
+function NativePlayer({ id, autoPlay, knownDuration = 0 }) {
   const [streamUrl, setStreamUrl] = useState(null)
   const [streamError, setStreamError] = useState(null)
   const [loadingStream, setLoadingStream] = useState(true)
@@ -19,9 +49,12 @@ function NativePlayer({ id, autoPlay }) {
   const hlsRef = useRef(null)
   const containerRef = useRef(null)
   const seekToRef = useRef(null)
+  const knownRef = useRef(0)
+  knownRef.current = knownDuration > 0 ? knownDuration : 0
   const [playing, setPlaying] = useState(autoPlay)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [seekable, setSeekable] = useState(0)
   const [volume, setVolume] = useState(1)
   const [speed, setSpeed] = useState(1)
   const [muted, setMuted] = useState(false)
@@ -72,6 +105,7 @@ function NativePlayer({ id, autoPlay }) {
     setPhase('resolving')
     setCurrentTime(0)
     setDuration(0)
+    setSeekable(0)
     timingRef.current = { t0: Date.now(), manifest: false, firstFrame: false }
 
     stopCurrent()
@@ -105,6 +139,9 @@ function NativePlayer({ id, autoPlay }) {
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
+        // The playlist has no end tag until ffmpeg finishes, so hls.js would
+        // otherwise treat it as live and start at the growing edge.
+        startPosition: 0,
         manifestLoadingMaxRetry: 6,
         manifestLoadingRetryDelay: 300,
         manifestLoadingTimeOut: 20000,
@@ -147,9 +184,14 @@ function NativePlayer({ id, autoPlay }) {
   }, [streamUrl, autoPlay])
 
   const fmt = (s) => {
-    if (!isFinite(s)) return '0:00'
-    const m = Math.floor(s / 60); const sec = Math.floor(s % 60)
-    return `${m}:${sec.toString().padStart(2, '0')}`
+    if (!isFinite(s) || s < 0) return '0:00'
+    const total = Math.floor(s)
+    const h = Math.floor(total / 3600)
+    const m = Math.floor((total % 3600) / 60)
+    const sec = total % 60
+    const mm = h > 0 ? String(m).padStart(2, '0') : String(m)
+    const clock = `${mm}:${String(sec).padStart(2, '0')}`
+    return h > 0 ? `${h}:${clock}` : clock
   }
 
   const togglePlay = () => {
@@ -168,10 +210,13 @@ function NativePlayer({ id, autoPlay }) {
 
   const onSeek = (e) => {
     const video = videoRef.current
-    if (!video || !duration) return
+    const total = fullDuration(knownRef.current, video ? video.duration : duration)
+    if (!video || !total) return
     const rect = e.currentTarget.getBoundingClientRect()
     const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
-    const t = frac * duration
+    let t = frac * total
+    const end = seekableEnd(video)
+    if (end > 0) t = Math.min(t, end)
     if (seeking === false) setSeeking(true)
     setCurrentTime(t)
     video.currentTime = t
@@ -229,14 +274,25 @@ function NativePlayer({ id, autoPlay }) {
       if (e.key === 'ArrowUp') { e.preventDefault(); adjustVolume(0.05); return }
       if (e.key === 'ArrowDown') { e.preventDefault(); adjustVolume(-0.05); return }
       if (e.key === 'Home') { e.preventDefault(); if (video) video.currentTime = 0; return }
-      if (e.key === 'End') { e.preventDefault(); if (video && isFinite(video.duration)) video.currentTime = video.duration; return }
+      if (e.key === 'End') {
+        e.preventDefault()
+        const end = seekableEnd(video)
+        if (end > 0) video.currentTime = end
+        return
+      }
       if (e.key === '+' || e.key === '=') { adjustVolume(0.05); return }
       if (e.key === '-' || e.key === '_') { adjustVolume(-0.05); return }
       if (e.key === '>' || e.key === '.') { adjustSpeed(0.25); return }
       if (e.key === '<' || e.key === ',') { adjustSpeed(-0.25); return }
       if (/^[0-9]$/.test(e.key)) {
         const pct = parseInt(e.key, 10) / 10
-        if (video && isFinite(video.duration)) video.currentTime = pct * video.duration
+        const total = fullDuration(knownRef.current, video.duration)
+        if (total > 0) {
+          let t = pct * total
+          const end = seekableEnd(video)
+          if (end > 0) t = Math.min(t, end)
+          video.currentTime = t
+        }
         return
       }
     }
@@ -295,6 +351,10 @@ function NativePlayer({ id, autoPlay }) {
     </div>
   )
 
+  const totalDuration = fullDuration(knownDuration, duration)
+  const playedPct = totalDuration ? Math.min(100, (currentTime / totalDuration) * 100) : 0
+  const bufferedPct = totalDuration ? Math.min(100, (Math.max(seekable, isFinite(duration) ? duration : 0) / totalDuration) * 100) : 0
+
   return (
     <div
       ref={containerRef}
@@ -321,10 +381,27 @@ function NativePlayer({ id, autoPlay }) {
           }
         }}
         onPause={() => setPlaying(false)}
-        onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-        onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration || 0); if (seekToRef.current) { try { e.currentTarget.currentTime = seekToRef.current } catch (_) {} seekToRef.current = null } }}
+        onTimeUpdate={(e) => {
+          const v = e.currentTarget
+          setCurrentTime(v.currentTime)
+          const end = seekableEnd(v)
+          if (end > 0) setSeekable(end)
+        }}
+        onLoadedMetadata={(e) => {
+          const d = e.currentTarget.duration
+          if (isFinite(d) && d > 0) setDuration(d)
+          const end = seekableEnd(e.currentTarget)
+          if (end > 0) setSeekable(end)
+          if (seekToRef.current) { try { e.currentTarget.currentTime = seekToRef.current } catch (_) {} seekToRef.current = null }
+        }}
         onDurationChange={(e) => { const d = e.currentTarget.duration; if (isFinite(d) && d > 0) setDuration(d) }}
-        onProgress={(e) => { const d = e.currentTarget.duration; if (isFinite(d) && d > 0 && e.currentTarget.buffered.length) setDuration(d) }}
+        onProgress={(e) => {
+          const v = e.currentTarget
+          const d = v.duration
+          if (isFinite(d) && d > 0 && v.buffered.length) setDuration(d)
+          const end = seekableEnd(v)
+          if (end > 0) setSeekable(end)
+        }}
         onEnded={() => { setPlaying(false); setShowControls(true) }}
         onVolumeChange={(e) => { setVolume(e.currentTarget.volume); setMuted(e.currentTarget.muted) }}
       />
@@ -410,8 +487,9 @@ function NativePlayer({ id, autoPlay }) {
                 onClick={onSeek}
                 onMouseMove={(e) => { if (e.buttons === 1) onSeek(e) }}
               >
-                <div className="absolute inset-y-0 left-0 rounded-full bg-yt-red" style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }} />
-                <div className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-yt-red opacity-0 group-hover/seek:opacity-100 transition" style={{ left: `calc(${duration ? (currentTime / duration) * 100 : 0}% - 7px)` }} />
+                <div className="absolute inset-y-0 left-0 rounded-full bg-white/40" style={{ width: `${bufferedPct}%` }} />
+                <div className="absolute inset-y-0 left-0 rounded-full bg-yt-red" style={{ width: `${playedPct}%` }} />
+                <div className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-yt-red opacity-0 group-hover/seek:opacity-100 transition" style={{ left: `calc(${playedPct}% - 7px)` }} />
               </div>
               <div className="flex items-center gap-2">
                 <button className={menuBtn} onClick={togglePlay}>
@@ -424,7 +502,7 @@ function NativePlayer({ id, autoPlay }) {
                     ? <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M16.5 12a4.5 4.5 0 00-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.796 8.796 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 003.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" /></svg>
                     : <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05A4.5 4.5 0 0016.5 12zM14 3.23v2.06a7 7 0 010 13.42v2.06c5.12-.51 9-4.8 9-9.77s-3.88-9.26-9-9.77z" /></svg>}
                 </button>
-                <span className="text-[13px] text-white/85 font-medium tabular-nums">{fmt(currentTime)} / {fmt(duration)}</span>
+                <span className="text-[13px] text-white/85 font-medium tabular-nums">{fmt(currentTime)} / {fmt(totalDuration)}</span>
                 <div className="flex-1" />
                 <span className="text-[13px] text-white/85 font-medium capitalize tabular-nums">{quality === 'auto' ? 'Auto' : `${quality}p`} · {speed}x</span>
               </div>
@@ -540,6 +618,8 @@ export default function VideoDetail() {
   const { startDownload, activeDownloads, completedDownloads, playFile, cancelDownload } = useDownloads()
   const { settings } = useSettings()
   const { recordWatch } = useSubscriptions()
+  const { isInWatchLater, toggleWatchLater } = useWatchLater()
+  const { addToast } = useToast()
   const [videoInfo, setVideoInfo] = useState(null)
   const [formats, setFormats] = useState([])
   const [loadingInfo, setLoadingInfo] = useState(true)
@@ -696,7 +776,7 @@ export default function VideoDetail() {
                 {playingLocal ? (
                   <LocalPlayer url={playingLocal} title={videoInfo?.title || 'Local preview'} onClose={closeLocalPlayer} />
                 ) : settings.playbackMode === 'inApp' ? (
-                  <NativePlayer id={id} autoPlay={settings.autoplay} />
+                  <NativePlayer id={id} autoPlay={settings.autoplay} knownDuration={clockToSeconds(videoInfo?.duration)} />
                 ) : (
                   <iframe
                     key={id}
@@ -741,11 +821,31 @@ export default function VideoDetail() {
                   <span className="text-gray-600 dark:text-gray-400 text-sm">
                     {videoInfo.views}{videoInfo.duration ? ` views · ${videoInfo.duration}` : ''}
                   </span>
+                  <button
+                    onClick={() => {
+                      const queued = isInWatchLater(id)
+                      toggleWatchLater({
+                        id,
+                        title: videoInfo.title || '',
+                        thumbnail: videoInfo.thumbnail || '',
+                        channel: videoInfo.channel || '',
+                        duration: videoInfo.duration || '',
+                      })
+                      addToast('success', queued ? 'Removed from Watch later' : 'Added to Watch later', 2500)
+                    }}
+                    className={`text-[13px] px-3 py-1 rounded-full border transition-colors ${
+                      isInWatchLater(id)
+                        ? 'border-current text-gray-900 dark:text-white'
+                        : 'border-black/15 dark:border-white/20 text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {isInWatchLater(id) ? 'In Watch later' : 'Watch later'}
+                  </button>
                   {videoInfo.channel && (
                     <div className="flex items-center gap-3">
                       <button
                         onClick={() => navigate(`/channel/${encodeURIComponent(videoInfo.channel)}`)}
-                        className="w-10 h-10 bg-gradient-to-br from-yt-red to-pink-500 rounded-full flex items-center justify-center text-lg font-medium text-white hover-ring"
+                        className="w-8 h-8 bg-black/[0.06] dark:bg-white/10 rounded-full flex items-center justify-center text-sm text-gray-700 dark:text-gray-200"
                         title={`View ${videoInfo.channel} channel`}
                         aria-label="View channel"
                       >
@@ -753,7 +853,7 @@ export default function VideoDetail() {
                       </button>
                       <button
                         onClick={() => navigate(`/channel/${encodeURIComponent(videoInfo.channel)}`)}
-                        className="font-medium hover:text-yt-red transition-colors"
+                        className="text-sm text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white"
                       >{videoInfo.channel}</button>
                       <VideoMenu video={{ id, title: videoInfo?.title || '', thumbnail: videoInfo?.thumbnail || '', channel: videoInfo.channel, duration: videoInfo.duration || '' }} />
                     </div>
@@ -761,7 +861,7 @@ export default function VideoDetail() {
                 </div>
               )}
               {settings.showDescriptions && videoInfo?.description && (
-                <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800/80 rounded-xl border border-black/5 dark:border-white/5">
+                <div className="mt-4 text-gray-600 dark:text-gray-300">
                   <p className="whitespace-pre-wrap text-sm leading-relaxed">{videoInfo.description}</p>
                 </div>
               )}
@@ -771,10 +871,7 @@ export default function VideoDetail() {
 
         <div className="lg:w-80 shrink-0">
           <div className="sticky top-4 space-y-4">
-            <div className="flex items-center gap-2.5">
-              <span className="w-1 h-5 bg-yt-red rounded-full" />
-              <h3 className="font-semibold text-lg">Download Options</h3>
-            </div>
+            <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Download</h3>
 
             {activeForVideo.length > 0 && (
               <div className="space-y-2 p-3 bg-yt-red/5 dark:bg-yt-red/10 border border-yt-red/20 rounded-xl">

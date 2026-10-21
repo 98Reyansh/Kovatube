@@ -26,17 +26,12 @@ function Toggle({ checked, onChange, disabled }) {
   )
 }
 
-function SettingRow({ icon, title, description, children }) {
+function SettingRow({ title, description, children }) {
   return (
-    <div className="stagger-item flex items-center justify-between gap-4 p-4 bg-white dark:bg-gray-800/80 border border-black/[0.05] dark:border-white/[0.06] rounded-xl hover-lift">
-      <div className="flex items-start gap-3 min-w-0">
-        <span className="w-10 h-10 rounded-lg bg-yt-red/10 flex items-center justify-center shrink-0 mt-0.5 transition-transform duration-200 group-hover:scale-105">
-          {icon}
-        </span>
-        <div>
-          <h3 className="font-medium text-sm">{title}</h3>
-          {description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{description}</p>}
-        </div>
+    <div className="stagger-item flex items-center justify-between gap-6 py-3.5 border-b border-black/[0.06] dark:border-white/[0.06]">
+      <div className="min-w-0">
+        <h3 className="font-medium text-sm">{title}</h3>
+        {description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{description}</p>}
       </div>
       <div className="shrink-0">{children}</div>
     </div>
@@ -78,13 +73,7 @@ export default function Settings() {
 
   return (
     <div className="max-w-2xl mx-auto py-4 space-y-8 page-enter">
-      <div className="flex items-center gap-3">
-        <span className="w-1 h-8 bg-yt-red rounded-full" />
-        <div>
-          <h1 className="text-2xl font-semibold">Settings</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">Customize your Kovatube experience</p>
-        </div>
-      </div>
+      <h1 className="text-lg font-medium tracking-tight">Settings</h1>
 
       {!hydrated ? (
         <div className="space-y-3">
@@ -95,7 +84,7 @@ export default function Settings() {
       ) : (
         <>
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">YouTube Account</h2>
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">YouTube Account</h2>
 
             <SettingRow
               title={signedIn ? (account?.name || 'Signed in to Google') : 'Sign in to Google'}
@@ -153,7 +142,7 @@ export default function Settings() {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Appearance</h2>
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">Appearance</h2>
             <SettingRow
               title="Theme"
               description="Light, Dark, or pure black AMOLED"
@@ -216,7 +205,7 @@ export default function Settings() {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Playback</h2>
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">Playback</h2>
             <SettingRow
               title="Autoplay videos"
               description="Start playing videos automatically when you open them"
@@ -268,7 +257,7 @@ export default function Settings() {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Downloads</h2>
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">Downloads</h2>
             <SettingRow
               title="Downloads folder"
               description={
@@ -384,7 +373,7 @@ export default function Settings() {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Playback mode</h2>
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">Playback mode</h2>
             <SettingRow
               title="Play downloaded files in-app"
               description="Play completed downloads inside the app instead of opening an external player"

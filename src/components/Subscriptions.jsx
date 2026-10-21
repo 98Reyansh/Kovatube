@@ -10,9 +10,9 @@ export default function Subscriptions() {
     <div className="max-w-4xl mx-auto space-y-10">
       <div>
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Subscriptions</h1>
-          <Link to="/" className="px-3 py-2 rounded-lg text-sm font-medium bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors hover-ring">
-            ← Back to For You
+          <h1 className="text-lg font-medium tracking-tight">Subscriptions</h1>
+          <Link to="/" className="text-[13px] text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white">
+            For You
           </Link>
         </div>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
@@ -34,12 +34,12 @@ export default function Subscriptions() {
           </Link>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="max-w-xl">
           {subscriptions.map((channel) => (
-            <div key={channel} className="flex items-center gap-3 p-4 bg-gray-100 dark:bg-gray-800/80 rounded-xl border border-transparent hover:border-yt-red/40 transition-all hover-lift">
+            <div key={channel} className="stagger-item flex items-center gap-3 py-3 border-b border-black/[0.06] dark:border-white/[0.06]">
               <button
                 onClick={() => navigate(`/channel/${encodeURIComponent(channel)}`)}
-                className="w-10 h-10 shrink-0 bg-gradient-to-br from-yt-red to-pink-500 rounded-full flex items-center justify-center text-lg font-medium text-white hover-ring"
+                className="w-8 h-8 shrink-0 bg-black/[0.06] dark:bg-white/10 rounded-full flex items-center justify-center text-sm text-gray-700 dark:text-gray-200"
                 title={`View ${channel} channel`}
                 aria-label="View channel"
               >
@@ -47,14 +47,14 @@ export default function Subscriptions() {
               </button>
               <button
                 onClick={() => navigate(`/channel/${encodeURIComponent(channel)}`)}
-                className="min-w-0 flex-1 text-left hover:text-yt-red transition-colors"
+                className="min-w-0 flex-1 text-left"
               >
                 <p className="font-medium truncate">{channel}</p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">Channel</p>
               </button>
               <button
                 onClick={() => unsubscribe(channel)}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-gray-200 dark:bg-gray-700 hover:bg-red-500 hover:text-white transition-colors shrink-0"
+                className="text-xs text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 shrink-0"
               >
                 Unsubscribe
               </button>
@@ -65,18 +65,17 @@ export default function Subscriptions() {
 
       {history.length > 0 && (
         <section>
-          <div className="flex items-center gap-2.5 mb-4">
-            <span className="w-1 h-6 bg-yt-red rounded-full" />
-            <h2 className="text-xl font-semibold">
-              Watch History
+          <div className="mb-3">
+            <h2 className="text-base font-medium">
+              Watch history
               <span className="text-sm font-normal text-gray-500 dark:text-gray-400 ml-2">
                 {history.length} recently watched — powers your recommendations
               </span>
             </h2>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="reveal-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {history.slice(0, 12).map((v) => (
-              <Link key={v.id} to={`/video/${v.id}`} onMouseEnter={() => prewarmOnHover(v.id)} className="group flex gap-3 p-3 bg-gray-100 dark:bg-gray-800/80 rounded-xl hover:border hover:border-yt-red/40 transition-all hover-lift">
+              <Link key={v.id} to={`/video/${v.id}`} onMouseEnter={() => prewarmOnHover(v.id)} className="group flex gap-3 py-2">
                 <div className="w-20 h-12 shrink-0 rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-700">
                   {v.thumbnail ? (
                     <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />

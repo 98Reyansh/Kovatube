@@ -14,13 +14,7 @@ export default function MusicDownloads() {
     <div className="max-w-5xl mx-auto space-y-8 page-enter">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2.5">
-            Music Downloads
-            <span className="w-1 h-6 bg-yt-red rounded-full" />
-          </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Saved songs and playlists, with their lyrics — ready offline
-          </p>
+          <h1 className="text-lg font-medium tracking-tight">Music downloads</h1>
         </div>
         <DownloadsTabs active="music" />
       </div>
@@ -29,14 +23,13 @@ export default function MusicDownloads() {
         <section>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <span className="w-1 h-5 bg-yt-red rounded-full" />
-              <h2 className="text-lg font-semibold">
+              <h2 className="text-sm font-medium text-gray-500 dark:text-gray-400">
                 Downloading
                 <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">{activeMusic.length}</span>
               </h2>
             </div>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+          <div className="reveal-grid grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
             {activeMusic.map((dl) => <ActiveDownloadCard key={dl.id} download={dl} />)}
           </div>
         </section>

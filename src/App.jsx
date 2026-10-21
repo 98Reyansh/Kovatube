@@ -10,6 +10,7 @@ import Subscriptions from './components/Subscriptions'
 import Channel from './components/Channel'
 import NewVideos from './components/NewVideos'
 import SavedVideos from './components/SavedVideos'
+import WatchLater from './components/WatchLater'
 import Music from './components/music/Music'
 import MusicBrowse from './components/music/MusicBrowse'
 import MusicDownloads from './components/music/MusicDownloads'
@@ -20,6 +21,7 @@ import { SubscriptionsProvider, useSubscriptions } from './context/Subscriptions
 import { DownloadProvider } from './context/DownloadContext'
 import { SmartDownloadProvider } from './context/SmartDownloadContext'
 import { SavedProvider } from './context/SavedContext'
+import { WatchLaterProvider } from './context/WatchLaterContext'
 import { ToastProvider } from './context/ToastContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { QueueProvider, useQueue } from './context/QueueContext'
@@ -63,7 +65,7 @@ function AnimatedRoutes() {
   return (
     <main className={`flex-1 overflow-auto transition-[padding] duration-300 ${queueCurrent ? 'pb-20' : 'pb-0'}`}>
       <div key={location.pathname + ':' + refreshToken} className="h-full">
-        <div className="p-4 page-enter">
+        <div className="px-6 py-5 page-enter">
           <Routes location={location}>
             <Route path="/" element={<Home />} />
             <Route path="/video/:id" element={<VideoDetail />} />
@@ -74,6 +76,7 @@ function AnimatedRoutes() {
             <Route path="/subscriptions" element={<Subscriptions />} />
             <Route path="/new" element={<NewVideos />} />
             <Route path="/saved" element={<SavedVideos />} />
+            <Route path="/watch-later" element={<WatchLater />} />
             <Route path="/music" element={<Music />} />
             <Route path="/music/browse/:browseId" element={<MusicBrowse />} />
             <Route path="/settings" element={<Settings />} />
@@ -117,6 +120,7 @@ function App() {
         <ToastProvider>
         <DownloadProvider>
           <SavedProvider>
+          <WatchLaterProvider>
           <SmartDownloadProvider>
             <QueueProvider>
               <Router>
@@ -124,6 +128,7 @@ function App() {
               </Router>
             </QueueProvider>
           </SmartDownloadProvider>
+          </WatchLaterProvider>
           </SavedProvider>
         </DownloadProvider>
         </ToastProvider>

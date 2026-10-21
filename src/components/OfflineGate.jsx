@@ -4,7 +4,7 @@ import { useNetwork } from '../context/NetworkContext'
 
 // Routes that already work without a connection — don't cover them with the
 // offline screen (the user is exactly where they need to be).
-const OFFLINE_ROUTES = ['/downloads', '/settings']
+const OFFLINE_ROUTES = ['/downloads', '/settings', '/watch-later', '/saved']
 
 export default function OfflineGate() {
   const { online, checking, retry } = useNetwork()

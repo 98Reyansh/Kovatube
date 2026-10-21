@@ -186,19 +186,20 @@ export default function Music() {
   return (
     <div className="animate-fade-in">
       <div className="flex items-center gap-2 mb-4 flex-wrap">
-        <h1 className="text-2xl font-bold mr-2 gradient-text">Music</h1>
-        <div className="flex items-center gap-1 bg-black/[0.04] dark:bg-white/[0.06] rounded-full p-1">
+        <h1 className="text-lg font-medium tracking-tight mr-4">Music</h1>
+        <div className="flex items-center gap-4">
           {TABS.map(t => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`px-3.5 py-1.5 rounded-full text-sm font-medium transition-colors ${
-                tab === t.id ? 'bg-white dark:bg-white/15 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+              data-active={tab === t.id ? 'true' : 'false'}
+              className={`nav-underline text-[13px] pb-1 transition-colors ${
+                tab === t.id ? 'text-gray-900 dark:text-white' : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
               }`}
             >
               {t.label}
               {t.id === 'downloaded' && musicDownloadCount > 0 && (
-                <span className="ml-1.5 text-xs px-1.5 py-0.5 rounded-full bg-yt-red/15 text-yt-red">{musicDownloadCount}</span>
+                <span className="ml-1 text-[11px] tabular-nums text-gray-400">{musicDownloadCount}</span>
               )}
             </button>
           ))}
@@ -206,7 +207,7 @@ export default function Music() {
       </div>
 
       {tab === 'home' && (
-        <div>
+        <div className="animate-fade-in-up">
           {!home && <div className="space-y-6">{[0, 1].map(i => (<div key={i}><div className="music-skeleton h-5 w-40 mb-3" /><CardSkeletonRow /></div>))}</div>}
           {home?.error && !home.shelves?.length && <p className="text-sm text-gray-500">Couldn't load music home. Check your connection and try again.</p>}
           {home?.shelves?.map((s, i) => <Shelf key={i} shelf={s} />)}
@@ -214,7 +215,7 @@ export default function Music() {
       )}
 
       {tab === 'charts' && (
-        <div>
+        <div className="animate-fade-in-up">
           {!charts && <SkeletonRows />}
           {charts?.error && !charts.shelves?.length && <p className="text-sm text-gray-500">Couldn't load charts.</p>}
           {charts?.shelves?.map((s, i) => <Shelf key={i} shelf={s} />)}
@@ -222,13 +223,13 @@ export default function Music() {
       )}
 
       {tab === 'search' && (
-        <div>
+        <div className="animate-fade-in-up">
           <form onSubmit={onSearchSubmit} className="relative max-w-xl mb-3">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search songs, albums, artists, playlists"
-              className="w-full px-4 py-2.5 pr-11 rounded-full bg-black/[0.05] dark:bg-white/[0.08] border border-transparent focus:bg-black/[0.03] dark:focus:bg-white/[0.06] focus:ring-1 focus:ring-yt-red/30 outline-none transition-all text-sm input-minimal"
+              className="w-full px-3 py-2 pr-10 rounded-md bg-transparent border border-black/[0.08] dark:border-white/[0.1] focus:border-black/30 dark:focus:border-white/30 outline-none text-sm"
             />
             <button type="submit" className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-yt-red" aria-label="Search music">
               <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
@@ -240,8 +241,8 @@ export default function Music() {
               <button
                 key={f.id || 'all'}
                 onClick={() => onFilter(f.id)}
-                className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
-                  filter === f.id ? 'bg-yt-red text-white' : 'bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-gray-300 hover:bg-black/[0.08] dark:hover:bg-white/[0.12]'
+                className={`text-xs whitespace-nowrap pb-0.5 ${
+                  filter === f.id ? 'text-gray-900 dark:text-white border-b border-current' : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
                 }`}
               >
                 {f.label}
@@ -285,7 +286,7 @@ export default function Music() {
       )}
 
       {tab === 'library' && (
-        <div>
+        <div className="animate-fade-in-up">
           {!library && <SkeletonRows />}
           {library && !library.signedIn && (
             <div className="text-center py-16">

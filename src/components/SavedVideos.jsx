@@ -46,17 +46,10 @@ export default function SavedVideos() {
 
   return (
     <div className="max-w-6xl mx-auto py-4 page-enter">
-      <div className="flex items-center gap-3 mb-6">
-        <span className="w-1 h-8 bg-yt-red rounded-full" />
-        <div>
-          <h1 className="text-2xl font-semibold">Saved videos</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {saved.length > 0
-              ? `${saved.length} video${saved.length === 1 ? '' : 's'} saved for later`
-              : 'Your watch-later list'}
-          </p>
-        </div>
-      </div>
+      <h1 className="text-lg font-medium tracking-tight mb-5">
+        Saved
+        {saved.length > 0 && <span className="ml-2 text-sm font-normal text-gray-400">{saved.length}</span>}
+      </h1>
 
       {saved.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center animate-fade-in-up">
@@ -70,19 +63,19 @@ export default function SavedVideos() {
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
+        <div className="reveal-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
           {saved.map((video) => (
             <div
               key={video.id}
-              className="stagger-item hover-lift group cursor-pointer"
+              className="group cursor-pointer"
               onClick={() => navigate(`/video/${video.id}`)}
             >
-              <div className="relative aspect-video bg-gray-200 dark:bg-gray-800 rounded-xl overflow-hidden shadow-sm group-hover:shadow-lg transition-shadow">
+              <div className="relative aspect-video bg-neutral-200 dark:bg-neutral-900 rounded-md overflow-hidden">
                 {video.thumbnail ? (
                   <img
                     src={video.thumbnail}
                     alt={video.title}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    className="w-full h-full object-cover"
                     loading="lazy"
                   />
                 ) : (
@@ -97,11 +90,6 @@ export default function SavedVideos() {
                     {video.duration}
                   </span>
                 )}
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-                  <span className="w-12 h-12 bg-yt-red/90 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    <svg className="w-6 h-6 translate-x-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-                  </span>
-                </div>
                 {/* quick actions */}
                 <div className="absolute top-1.5 right-1.5 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
@@ -127,7 +115,7 @@ export default function SavedVideos() {
                 </div>
               </div>
               <div className="mt-2.5">
-                <h3 className="font-medium text-[15px] leading-snug line-clamp-2 group-hover:text-yt-red dark:group-hover:text-yt-red-light transition-colors">
+                <h3 className="font-medium text-[14px] leading-snug line-clamp-2">
                   {video.title || 'Untitled video'}
                 </h3>
                 <div className="flex items-center justify-between gap-2 mt-1">
