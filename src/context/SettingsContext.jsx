@@ -25,6 +25,8 @@ const DEFAULTS = {
   smartDlCount: 0,
   smartDlInterval: 60, // minutes between auto-download checks
   fypSource: 'auto', // 'auto' (personalized when signed in) | 'signedIn' | 'anon'
+  welcomed: false, // first-launch welcome has been dismissed
+  navPosition: 'side', // 'side' | 'top'
 }
 
 export const ACCENT_PRESETS = {

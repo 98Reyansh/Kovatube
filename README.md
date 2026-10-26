@@ -64,6 +64,8 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 - Browse **songs, albums, artists, playlists** (and album/playlist detail pages).
 - **Audio player** with a **persistent mini-player** that keeps playing while you browse the rest of the app.
 - **Queue** with **shuffle**, **repeat** (all / one / off), **prev/next**, and **auto-advance**.
+- **Full-screen player** — a large cover-art view with a seek bar, the full transport and volume; toggle artwork/lyrics, or jump to ambient mode. Open it with `F` or the expand icon on the mini-player.
+- **Keyboard shortcuts** — `Space`/`K` play-pause, `J`/`L` ±10s, `←`/`→` ±5s, `↑`/`↓` volume, `M` mute, `N`/`P` next-previous, `S` shuffle, `R` repeat, `F` full screen, `A` ambient mode, `0–9` jump to %, `Home`/`End` start-end, `+`/`-` volume.
 - Music and video coordinate automatically so only one plays through the speakers at a time.
 
 ### Lyrics
@@ -74,7 +76,11 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 
 ### Downloads & offline
 - **Download** videos/audio, with a fast InnerTube path and a `yt-dlp` fallback.
-- **Smart Download** — optionally auto-grab videos from your For You recommendations.
+- **Music and videos kept apart** — songs land in `~/.config/Kovatube/downloads/music`, videos in `~/.config/Kovatube/downloads/videos` (previously one mixed folder; existing files are tidied into the right one on launch).
+- **Separate downloads pages** — **Video Downloads** lists only videos; songs live on **Music Downloads** (also reachable from Music → Downloaded), with playlists, tracks, lyrics and in-progress song downloads.
+- **Playlist & album downloads** — each song saved as MP3 with its lyrics alongside; the playlist shows up as one entry with its songs in order.
+- **Auto-sync playlists** — songs you add to a downloaded playlist later are fetched and downloaded automatically (checked at launch and every 15 minutes, or on demand with **Sync now**). Toggle it per playlist.
+- **Smart Download** — two **independent** sources, each with its own toggle and its own download budget: auto-grab videos from your **For You** recommendations, and/or auto-download YouTube links you **copy to the clipboard**. Counters are per source and can be reset in Settings; a failed or cancelled download gives its slot back.
 - **Offline playback** of downloaded media.
 
 ### Look & feel

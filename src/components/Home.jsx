@@ -2,6 +2,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useSearch } from '../context/SearchContext'
 import FypFeed from './FypFeed'
 import { prewarmOnHover } from '../lib/prewarm'
+import VideoMenu from './VideoMenu'
 
 function SkeletonShort() {
   return (
@@ -16,37 +17,24 @@ function SkeletonShort() {
 function ShortCard({ video }) {
   const navigate = useNavigate()
   return (
-    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="shrink-0 w-36 group hover-lift rounded-xl">
-      <div className="relative">
-        <div className="absolute -inset-1 rounded-2xl bg-yt-red/50 blur-2xl opacity-0 group-hover:opacity-60 transition-opacity duration-300 pointer-events-none" />
-        <div className="relative aspect-[9/16] bg-gray-200 dark:bg-gray-800 rounded-xl overflow-hidden shadow-sm group-hover:shadow-lg transition-shadow">
+    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="shrink-0 w-36 group">
+      <div className="relative aspect-[9/16] bg-neutral-200 dark:bg-neutral-900 rounded-md overflow-hidden">
         {video.thumbnail ? (
           <img
             src={video.thumbnail}
             alt={video.title}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            className="w-full h-full object-cover"
             loading="lazy"
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center bg-gray-100 dark:bg-gray-800">
-            <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-full h-full flex items-center justify-center">
+            <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
             </svg>
           </div>
         )}
-        <div className="absolute bottom-1.5 left-1.5 right-1.5">
-          <p className="text-white text-xs font-medium line-clamp-2 bg-black/70 rounded-md px-1.5 py-1 backdrop-blur-sm">{video.title}</p>
-        </div>
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-          <span className="w-10 h-10 bg-yt-red/90 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-            <svg className="w-5 h-5 translate-x-0.5" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z"/>
-            </svg>
-          </span>
-        </div>
       </div>
-      </div>
-      <h3 className="font-medium text-sm mt-2 leading-snug line-clamp-2 group-hover:text-yt-red dark:group-hover:text-yt-red-light transition-colors">{video.title}</h3>
+      <h3 className="font-medium text-sm mt-2 leading-snug line-clamp-2">{video.title}</h3>
       <button
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (video.channel) navigate(`/channel/${encodeURIComponent(video.channel)}`) }}
         className="text-xs text-gray-600 dark:text-gray-400 mt-1 hover:text-yt-red transition-colors"
@@ -64,61 +52,39 @@ function VideoCard({ video }) {
     if (video.channel) navigate(`/channel/${encodeURIComponent(video.channel)}`)
   }
   return (
-    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col hover-lift rounded-xl">
-      <div className="relative">
-        <div className="absolute -inset-1 rounded-2xl bg-yt-red/50 blur-2xl opacity-0 group-hover:opacity-60 transition-opacity duration-300 pointer-events-none" />
-        <div className="relative aspect-video bg-gray-200 dark:bg-gray-800 rounded-xl overflow-hidden shadow-sm group-hover:shadow-lg transition-shadow">
+    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col">
+      <div className="relative aspect-video bg-neutral-200 dark:bg-neutral-900 rounded-md overflow-hidden">
         {video.thumbnail ? (
           <img
             src={video.thumbnail}
             alt={video.title}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            className="w-full h-full object-cover"
             loading="lazy"
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center bg-gray-100 dark:bg-gray-800">
-            <svg className="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="w-full h-full flex items-center justify-center">
+            <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
             </svg>
           </div>
         )}
         {video.duration && (
-          <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-white text-xs font-medium px-1.5 py-0.5 rounded">
+          <span className="absolute bottom-1.5 right-1.5 bg-black/75 text-white text-[11px] px-1 py-0.5 rounded">
             {video.duration}
           </span>
         )}
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-          <span className="w-12 h-12 bg-yt-red/90 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-            <svg className="w-6 h-6 translate-x-0.5" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M8 5v14l11-7z"/>
-            </svg>
-          </span>
-        </div>
       </div>
-      </div>
-      <div className="flex gap-3 mt-3">
-        <button
-          onClick={openChannel}
-          className="w-9 h-9 rounded-full bg-gradient-to-br from-yt-red to-pink-500 flex items-center justify-center text-white text-sm font-medium shrink-0 hover-ring"
-          title={`View ${video.channel || 'channel'} channel`}
-          aria-label="View channel"
-        >
-          {(video.channel || '?').charAt(0).toUpperCase()}
-        </button>
-        <div className="min-w-0 flex-1">
-          <h3 className="font-medium text-[15px] leading-snug line-clamp-2 group-hover:text-yt-red dark:group-hover:text-yt-red-light transition-colors">{video.title}</h3>
-          <div className="mt-1 text-sm text-gray-600 dark:text-gray-400">
-            <button onClick={openChannel} className="flex items-center gap-1 hover:text-yt-red transition-colors">
+      <div className="mt-2.5 min-w-0">
+          <h3 className="font-medium text-[14px] leading-snug line-clamp-2">{video.title}</h3>
+          <div className="mt-1 flex items-center justify-between gap-2 text-[13px] text-gray-500 dark:text-gray-400">
+            <button onClick={openChannel} className="truncate hover:text-gray-800 dark:hover:text-gray-200">
               {video.channel}
-              <svg className="w-3.5 h-3.5 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zM9.5 16.5l-3.5-3.5 1.41-1.41 2.09 2.09 5.09-5.09L16 9.5l-6.5 7z"/>
-              </svg>
             </button>
+            <VideoMenu video={video} />
           </div>
           <p className="text-sm text-gray-500 dark:text-gray-500">
             {video.views}{video.publishedTime ? ` · ${video.publishedTime}` : ''}
           </p>
-        </div>
       </div>
     </Link>
   )
@@ -187,18 +153,17 @@ export default function Home() {
     <div className="space-y-10">
       {results.shorts.length > 0 && (
         <section>
-          <div className="flex items-center gap-2.5 mb-4">
-            <span className="w-1 h-6 bg-yt-red rounded-full" />
-            <h2 className="text-xl font-semibold">
+          <div className="mb-3">
+            <h2 className="text-base font-medium">
               Shorts
               <span className="text-sm font-normal text-gray-500 dark:text-gray-400 ml-2">
                 {results.shorts.length} found
               </span>
             </h2>
           </div>
-          <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-thin">
+          <div className="reveal-grid flex gap-4 overflow-x-auto pb-4 scrollbar-thin">
             {results.shorts.map((video, i) => (
-              <div key={video.id} className="stagger-item hover-lift">
+              <div key={video.id} className="">
                 <ShortCard video={video} />
               </div>
             ))}
@@ -208,18 +173,17 @@ export default function Home() {
 
       {results.videos.length > 0 && (
         <section>
-          <div className="flex items-center gap-2.5 mb-4">
-            <span className="w-1 h-6 bg-yt-red rounded-full" />
-            <h2 className="text-xl font-semibold">
+          <div className="mb-3">
+            <h2 className="text-base font-medium">
               Videos
               <span className="text-sm font-normal text-gray-500 dark:text-gray-400 ml-2">
                 {results.videos.length} results for "{query}"
               </span>
             </h2>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
+          <div className="reveal-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
             {results.videos.map((video, i) => (
-              <div key={video.id} className="stagger-item hover-lift">
+              <div key={video.id} className="">
                 <VideoCard video={video} />
               </div>
             ))}

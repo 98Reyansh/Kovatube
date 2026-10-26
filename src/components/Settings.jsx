@@ -1,6 +1,9 @@
+import { useEffect, useState } from 'react'
 import { useSettings, ACCENT_PRESETS } from '../context/SettingsContext'
+import { useReplayWelcome } from './WelcomeWizard'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
+import { useSmartDownloads } from '../context/SmartDownloadContext'
 
 function Toggle({ checked, onChange, disabled }) {
   return (
@@ -24,17 +27,12 @@ function Toggle({ checked, onChange, disabled }) {
   )
 }
 
-function SettingRow({ icon, title, description, children }) {
+function SettingRow({ title, description, children }) {
   return (
-    <div className="stagger-item flex items-center justify-between gap-4 p-4 bg-white dark:bg-gray-800/80 border border-black/[0.05] dark:border-white/[0.06] rounded-xl hover-lift">
-      <div className="flex items-start gap-3 min-w-0">
-        <span className="w-10 h-10 rounded-lg bg-yt-red/10 flex items-center justify-center shrink-0 mt-0.5 transition-transform duration-200 group-hover:scale-105">
-          {icon}
-        </span>
-        <div>
-          <h3 className="font-medium text-sm">{title}</h3>
-          {description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{description}</p>}
-        </div>
+    <div className="stagger-item flex items-center justify-between gap-6 py-3.5 border-b border-black/[0.06] dark:border-white/[0.06]">
+      <div className="min-w-0">
+        <h3 className="font-medium text-sm">{title}</h3>
+        {description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{description}</p>}
       </div>
       <div className="shrink-0">{children}</div>
     </div>
@@ -43,8 +41,27 @@ function SettingRow({ icon, title, description, children }) {
 
 export default function Settings() {
   const { settings, hydrated, updateSetting } = useSettings()
+  const replayWelcome = useReplayWelcome()
   const { addToast } = useToast()
   const { signedIn, account, signingIn, signIn, signOut } = useAuth()
+  const { enabled: smartDlEnabled, clipboard: smartDlClipboard, counts, toggleSmartDownload, toggleClipboard, refreshStatus, resetCounts } = useSmartDownloads()
+
+  // Real on-disk download folders (songs and videos are kept apart), shown in
+  // the Downloads section below.
+  const [dlPaths, setDlPaths] = useState(null)
+  useEffect(() => {
+    if (!window.electronAPI?.getDownloadPaths) return
+    window.electronAPI.getDownloadPaths().then(setDlPaths).catch(() => {})
+  }, [])
+
+  // Keep the per-source usage in the limit row accurate while this page is open.
+  useEffect(() => { refreshStatus() }, [refreshStatus])
+
+  const handleResetCounts = async () => {
+    const res = await resetCounts()
+    if (res) addToast('success', 'Smart download counters reset', 3000)
+    else addToast('error', 'Could not reset the counters', 3000)
+  }
 
   const handleSignIn = async () => {
     const ok = await signIn()
@@ -56,24 +73,9 @@ export default function Settings() {
     addToast('info', 'Signed out of Google', 3000)
   }
 
-  const selectDir = async () => {
-    if (!window.electronAPI) return
-    const picked = await window.electronAPI.selectDirectory()
-    if (picked) {
-      await updateSetting('downloadDir', picked)
-      addToast('success', 'Downloads folder updated', 3000)
-    }
-  }
-
   return (
     <div className="max-w-2xl mx-auto py-4 space-y-8 page-enter">
-      <div className="flex items-center gap-3">
-        <span className="w-1 h-8 bg-yt-red rounded-full" />
-        <div>
-          <h1 className="text-2xl font-semibold">Settings</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">Customize your Kovatube experience</p>
-        </div>
-      </div>
+      <h1 className="text-lg font-medium tracking-tight">Settings</h1>
 
       {!hydrated ? (
         <div className="space-y-3">
@@ -84,7 +86,7 @@ export default function Settings() {
       ) : (
         <>
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">YouTube Account</h2>
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">YouTube Account</h2>
 
             <SettingRow
               title={signedIn ? (account?.name || 'Signed in to Google') : 'Sign in to Google'}
@@ -142,7 +144,7 @@ export default function Settings() {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Appearance</h2>
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">Appearance</h2>
             <SettingRow
               title="Theme"
               description="Light, Dark, or pure black AMOLED"
@@ -192,6 +194,32 @@ export default function Settings() {
             </SettingRow>
 
             <SettingRow
+              title="Navigation"
+              description="Keep the library on the left, or move it to the top"
+            >
+              <select
+                value={settings.navPosition || 'side'}
+                onChange={(e) => updateSetting('navPosition', e.target.value)}
+                className="px-3 py-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm focus:outline-none focus:ring-2 focus:ring-yt-red/50 hover:border-yt-red/40"
+              >
+                <option value="side">Left</option>
+                <option value="top">Top</option>
+              </select>
+            </SettingRow>
+
+            <SettingRow
+              title="Welcome screen"
+              description="Show the first-launch welcome again"
+            >
+              <button
+                onClick={replayWelcome}
+                className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              >
+                Show again
+              </button>
+            </SettingRow>
+
+            <SettingRow
               title="Reduce motion"
               description="Minimize animations for a calmer experience"
               icon={
@@ -205,7 +233,7 @@ export default function Settings() {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Playback</h2>
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">Playback</h2>
             <SettingRow
               title="Autoplay videos"
               description="Start playing videos automatically when you open them"
@@ -257,23 +285,20 @@ export default function Settings() {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Downloads</h2>
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">Downloads</h2>
             <SettingRow
               title="Downloads folder"
-              description={settings.downloadDir || 'Current: ~/.config/Kovatube/downloads'}
+              description={
+                dlPaths
+                  ? `Music and videos are kept apart. Videos: ${dlPaths.videos} · Music: ${dlPaths.music}`
+                  : 'Music and videos are kept in separate folders inside ~/.config/Kovatube/downloads'
+              }
               icon={
                 <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                 </svg>
               }
-            >
-              <button
-                onClick={selectDir}
-                className="px-4 py-2 text-sm font-medium rounded-lg bg-yt-red text-white hover:bg-yt-red-hover transition-colors hover-ring"
-              >
-                Change
-              </button>
-            </SettingRow>
+            />
 
             <SettingRow
               title="Default download format"
@@ -296,8 +321,32 @@ export default function Settings() {
             </SettingRow>
 
             <SettingRow
+              title="Smart Downloads (For You feed)"
+              description="Automatically download new videos from your For You page"
+              icon={
+                <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              }
+            >
+              <Toggle checked={smartDlEnabled} onChange={() => { toggleSmartDownload().catch(() => {}) }} />
+            </SettingRow>
+
+            <SettingRow
+              title="Download from clipboard"
+              description="Automatically download YouTube links you copy"
+              icon={
+                <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m0 0v3m0-3h2a2 2 0 012 2v2a2 2 0 01-2 2H8a2 2 0 01-2-2V7a2 2 0 012-2z" />
+                </svg>
+              }
+            >
+              <Toggle checked={smartDlClipboard} onChange={() => { toggleClipboard().catch(() => {}) }} />
+            </SettingRow>
+
+            <SettingRow
               title="Smart download limit"
-              description="Max smart downloads in total (0 = unlimited; not reset per session)"
+              description={`Max smart downloads per source (0 = unlimited; not reset per session). Used — For You: ${counts.fyp}/${counts.limit || '∞'} · Clipboard: ${counts.clipboard}/${counts.limit || '∞'}`}
               icon={
                 <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -331,10 +380,28 @@ export default function Settings() {
                 className="w-24 px-3 py-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm focus:outline-none focus:ring-2 focus:ring-yt-red/50 hover:border-yt-red/40"
               />
             </SettingRow>
+
+            <SettingRow
+              title="Reset smart download counters"
+              description="Set both per-source counters back to 0 so downloads are allowed again (also lets previously tried links be retried)"
+              icon={
+                <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              }
+            >
+              <button
+                onClick={handleResetCounts}
+                disabled={counts.fyp === 0 && counts.clipboard === 0}
+                className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 hover:border-yt-red/50 hover:text-yt-red transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Reset
+              </button>
+            </SettingRow>
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Playback mode</h2>
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">Playback mode</h2>
             <SettingRow
               title="Play downloaded files in-app"
               description="Play completed downloads inside the app instead of opening an external player"

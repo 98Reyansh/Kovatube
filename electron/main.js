@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage, net } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -27,6 +27,11 @@ process.on('unhandledRejection', (reason) => {
 
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'Kovatube')
 const DOWNLOADS_DIR = path.join(CONFIG_DIR, 'downloads')
+// Music (audio) and video downloads live in their own subfolders so the two
+// kinds never mix in one pile.
+const MUSIC_DIR = path.join(DOWNLOADS_DIR, 'music')
+const VIDEOS_DIR = path.join(DOWNLOADS_DIR, 'videos')
+const MEDIA_DIRS = [MUSIC_DIR, VIDEOS_DIR]
 const THUMBS_DIR = path.join(CONFIG_DIR, 'thumbs')
 const STREAM_CACHE_DIR = path.join(CONFIG_DIR, 'cache')
 
@@ -57,8 +62,62 @@ function clearSearchCache() {
 function ensureDirectories() {
   if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
   if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true })
+  for (const d of MEDIA_DIRS) {
+    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true })
+  }
   if (!fs.existsSync(THUMBS_DIR)) fs.mkdirSync(THUMBS_DIR, { recursive: true })
   if (!fs.existsSync(STREAM_CACHE_DIR)) fs.mkdirSync(STREAM_CACHE_DIR, { recursive: true })
+}
+
+// One-time tidy-up: downloads used to share one folder. Move anything left at the
+// top level into music/ or videos/ by extension, so both the old and the new
+// layout end up in the same place. Never overwrites: if the destination already
+// has a file with that name, the original is left where it is.
+function migrateDownloadsLayout() {
+  let entries = []
+  try { entries = fs.readdirSync(DOWNLOADS_DIR, { withFileTypes: true }) } catch { return }
+
+  const moveIfAbsent = (name, toDir) => {
+    const from = path.join(DOWNLOADS_DIR, name)
+    if (!fs.existsSync(from)) return false
+    const to = path.join(toDir, name)
+    if (fs.existsSync(to)) return false
+    try { fs.renameSync(from, to); return true } catch { return false }
+  }
+
+  let moved = 0
+  // Pass 1: media files, each followed by its own lyrics sidecars.
+  for (const e of entries) {
+    if (!e.isFile()) continue
+    const name = e.name
+    const ext = path.extname(name).toLowerCase()
+    if (!AUDIO_EXTS.has(ext) && !VIDEO_EXTS.has(ext)) continue
+    const toDir = AUDIO_EXTS.has(ext) ? MUSIC_DIR : VIDEOS_DIR
+    if (moveIfAbsent(name, toDir)) moved++
+    const stem = name.replace(/\.[^.]+$/, '')
+    for (const sc of [`${stem}.lrc`, `${stem}.txt`]) {
+      if (moveIfAbsent(sc, MUSIC_DIR)) moved++
+    }
+  }
+
+  // Pass 2: sidecars whose media already sits in music/ (left behind by an
+  // earlier move). A stray .txt with no matching song is left alone.
+  for (const e of entries) {
+    if (!e.isFile()) continue
+    const name = e.name
+    const ext = path.extname(name).toLowerCase()
+    if (ext !== '.lrc' && ext !== '.txt') continue
+    if (!fs.existsSync(path.join(DOWNLOADS_DIR, name))) continue
+    const stem = name.replace(/\.[^.]+$/, '')
+    let hasMedia = false
+    try {
+      hasMedia = fs.readdirSync(MUSIC_DIR).some(x =>
+        x.startsWith(stem + '.') && AUDIO_EXTS.has(path.extname(x).toLowerCase()))
+    } catch { /* music folder may not exist yet */ }
+    if (hasMedia && moveIfAbsent(name, MUSIC_DIR)) moved++
+  }
+
+  if (moved) console.log(`[Downloads] Moved ${moved} file(s) into music/ and videos/`)
 }
 
 // ─── YouTube Innertube API ───────────────────────────────────────────────────
@@ -87,6 +146,43 @@ async function ytGetText(url) {
   const r = await fetch(url, { headers: { 'User-Agent': UA, Cookie: 'SOCS=CAI' } })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return r.text()
+}
+
+// ─── Network failure reporting ───────────────────────────────────────────────
+// Wrap the global fetch so any main-process request that fails at the network
+// level (DNS, refused, timeout, no route) can tell the renderer it looks
+// offline. The offline screen confirms with an explicit probe before showing.
+const nodeFetch = globalThis.fetch ? globalThis.fetch.bind(globalThis) : null
+
+function isNetworkError(e) {
+  if (!e) return false
+  const parts = [e.name, e.message, e.code]
+  if (e.cause) parts.push(e.cause.name, e.cause.message, e.cause.code)
+  const m = parts.filter(Boolean).join(' ')
+  return /fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|getaddrinfo|network/i.test(m)
+}
+
+let lastNetNotify = 0
+function notifyNetworkFailure() {
+  const now = Date.now()
+  if (now - lastNetNotify < 1000) return
+  lastNetNotify = now
+  try {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send('network-error')
+    }
+  } catch { /* no windows yet */ }
+}
+
+if (nodeFetch) {
+  globalThis.fetch = async (...args) => {
+    try {
+      return await nodeFetch(...args)
+    } catch (e) {
+      if (isNetworkError(e)) notifyNetworkFailure()
+      throw e
+    }
+  }
 }
 
 // ─── Google/YouTube sign-in: capture authenticated cookies + personalized feed ──
@@ -226,7 +322,9 @@ async function authedBrowse(body) {
         if (!body.context) body.context = {}
         body.context = Object.assign({}, cfg, body.context)
         if (body.context.client && typeof body.context.client === 'object') {
-          body.context.client = Object.assign({}, cfg.client || {}, body.context.client)
+          // The live page's client version and visitor data win. A hardcoded
+          // clientVersion makes the next page of the home feed come back empty.
+          body.context.client = Object.assign({}, body.context.client, cfg.client || {})
         } else {
           body.context.client = cfg.client || {}
         }
@@ -1172,16 +1270,23 @@ async function signedHomeFeed({ continuation = '', seen = [], force = false } = 
     let win = null
 
     if (continuation) {
-      const body = {
-        context: { client: { ...WEB_CLIENT } },
-        continuation,
-      }
-      const r = await authedBrowse(body)
+      const r = await authedBrowse({ continuation })
       if (!r.ok) {
         const status = r.status || 0
         const reason = (status === 401 || status === 403 || status === 429) ? 'expired' : 'request-error'
         console.log(`[Auth] home continuation HTTP ${status} → ${reason}`)
-        return { ok: false, reason, videos: [], continuation: '', hasMore: false }
+        if (reason === 'expired') return { ok: false, reason, videos: [], continuation: '', hasMore: false }
+        const extra = await loadFypMore({ cursor: 0, seen: [...seenSet] })
+        const moreVideos = extra?.videos || []
+        return {
+          ok: true,
+          reason: null,
+          videos: moreVideos,
+          continuation: '',
+          nextCursor: extra?.nextCursor || 0,
+          hasMore: !!(extra?.hasMore && moreVideos.length),
+          cached: false,
+        }
       }
       data = await r.json()
     } else {
@@ -1253,8 +1358,8 @@ async function signedHomeFeed({ continuation = '', seen = [], force = false } = 
     // Use different extraction logic for initial load vs continuation
     const nextCont = toastHomeContinuationSafe(continuation
       ? extractContinuationFromResponse(data)
-      : extractHomeContinuation(data, win))
-    if (!continuation) signedFeedCache = { ts: Date.now(), videos: all, continuation: nextCont, hasMore: !!nextCont }
+      : await extractHomeContinuation(data, win))
+    if (!continuation) signedFeedCache = { ts: Date.now(), videos: all, continuation: nextCont, hasMore: !!nextCont || all.length > 0 }
     console.log(`[Auth] signedHomeFeed: parsed ${all.length} videos, ${fresh.length} fresh, hasMore: ${!!nextCont}, contLen: ${(nextCont || '').length}`)
     if (fresh.length === 0 && all.length === 0) {
       console.log('[Auth] signedHomeFeed: ZERO videos found in data. Top keys:', Object.keys(data || {}))
@@ -1274,7 +1379,21 @@ async function signedHomeFeed({ continuation = '', seen = [], force = false } = 
         }
       } catch (e) { console.log('[Auth] feed debug error:', e.message) }
     }
-    return { ok: true, reason: null, videos: fresh, continuation: nextCont, hasMore: !!nextCont, cached: false }
+    if (continuation && fresh.length === 0) {
+      console.log('[Auth] home continuation returned no new videos, filling from the recommendation pool')
+      const extra = await loadFypMore({ cursor: 0, seen: [...seenSet] })
+      const moreVideos = extra?.videos || []
+      return {
+        ok: true,
+        reason: null,
+        videos: moreVideos,
+        continuation: '',
+        nextCursor: extra?.nextCursor || 0,
+        hasMore: !!(extra?.hasMore && moreVideos.length),
+        cached: false,
+      }
+    }
+    return { ok: true, reason: null, videos: fresh, continuation: nextCont, hasMore: !!nextCont || fresh.length > 0, cached: false }
   } catch (e) {
     console.error('[Auth] signedHomeFeed error:', e.message)
     return { ok: false, reason: 'request-error', videos: [], continuation: '', hasMore: false }
@@ -1322,71 +1441,59 @@ async function collectDomFeedVideos(win) {
   return Array.isArray(raw) ? raw : []
 }
 
-function extractHomeContinuation(data, win) {
-  let token = ''
-  const walk = (node) => {
-    if (!node || typeof node !== 'object') return
-    if (node.nextContinuationData?.continuation) {
-      token = node.nextContinuationData.continuation
-      return
+function tokenOn(node) {
+  if (!node || typeof node !== 'object') return ''
+  return node.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+    || node.continuationEndpoint?.continuationCommand?.token
+    || node.continuationCommand?.token
+    || node.nextContinuationData?.continuation
+    || ''
+}
+
+function tokenFromRichGrid(data) {
+  const tabs = data?.contents?.twoColumnBrowseResultsRenderer?.tabs || []
+  for (const tab of tabs) {
+    const grid = tab?.tabRenderer?.content?.richGridRenderer
+    if (!grid) continue
+    const contents = grid.contents || []
+    for (let i = contents.length - 1; i >= 0; i--) {
+      const token = tokenOn(contents[i])
+      if (token) return token
     }
-    if (node.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token) {
-      token = node.continuationItemRenderer.continuationEndpoint.continuationCommand.token
-      return
-    }
-    if (node.continuationCommand?.token) { token = node.continuationCommand.token; return }
-    for (const k of Object.keys(node)) {
-      const v = node[k]
-      if (v && typeof v === 'object') { if (!token) walk(v) }
-      else if (Array.isArray(v)) { if (!token) v.forEach(walk) }
+    for (const entry of grid.continuations || []) {
+      const token = tokenOn(entry)
+      if (token) return token
     }
   }
-  walk(data)
+  return ''
+}
 
-  // If not found in ytInitialData, try to extract from the DOM (continuation
-  // tokens can be embedded in the rich grid after lazy-loading)
-  if (!token && win) {
-    try {
-      const domToken = win.webContents.executeJavaScript(`(() => {
-        try {
-          // Look for continuation tokens in various DOM locations
-          const scripts = document.querySelectorAll('script')
-          for (const s of scripts) {
-            const m = s.textContent?.match(/"continuationCommand":\{"token":"([^"]+)"/) ||
-                           s.textContent?.match(/"nextContinuationData":\{"continuation":"([^"]+)"/)
-            if (m) return m[1]
+async function extractHomeContinuation(data, win) {
+  const fromGrid = tokenFromRichGrid(data)
+  if (fromGrid) return fromGrid
+  if (!win) return ''
+  try {
+    const domToken = await win.webContents.executeJavaScript(`(() => {
+      try {
+        const data = window.ytInitialData
+        const tabs = data && data.contents && data.contents.twoColumnBrowseResultsRenderer && data.contents.twoColumnBrowseResultsRenderer.tabs || []
+        for (const tab of tabs) {
+          const grid = tab.tabRenderer && tab.tabRenderer.content && tab.tabRenderer.content.richGridRenderer
+          if (!grid) continue
+          const contents = grid.contents || []
+          for (let i = contents.length - 1; i >= 0; i--) {
+            const item = contents[i] && contents[i].continuationItemRenderer
+            const token = item && item.continuationEndpoint && item.continuationEndpoint.continuationCommand && item.continuationEndpoint.continuationCommand.token
+            if (token) return token
           }
-          // Also check ytInitialData if it was updated
-          if (window.ytInitialData) {
-            const walk = (node) => {
-              if (!node || typeof node !== 'object') return null
-              if (node.nextContinuationData?.continuation) return node.nextContinuationData.continuation
-              if (node.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token) return node.continuationItemRenderer.continuationEndpoint.continuationCommand.token
-              if (node.continuationCommand?.token) return node.continuationCommand.token
-              for (const k of Object.keys(node)) {
-                const v = node[k]
-                if (v && typeof v === 'object') {
-                  const r = walk(v)
-                  if (r) return r
-                } else if (Array.isArray(v)) {
-                  for (const item of v) {
-                    const r = walk(item)
-                    if (r) return r
-                  }
-                }
-              }
-              return null
-            }
-            return walk(window.ytInitialData)
-          }
-        } catch (e) {}
+        }
         return ''
-      })()`).catch(() => '')
-      if (domToken) token = domToken
-    } catch (e) { /* ignore */ }
+      } catch (e) { return '' }
+    })()`).catch(() => '')
+    return typeof domToken === 'string' ? domToken : ''
+  } catch (e) {
+    return ''
   }
-
-  return token
 }
 
 function toastHomeContinuationSafe(t) {
@@ -1504,11 +1611,23 @@ async function loadSignedSubscriptions() {
 
 // Merge the signed-in account's YouTube subscriptions into the app's local
 // subscription list and persist. Returns the merged channel-name list.
+function rememberChannelAvatar(name, url) {
+  const key = (name || '').trim().toLowerCase()
+  let thumb = (url || '').trim()
+  if (!key || !thumb) return
+  if (thumb.startsWith('//')) thumb = 'https:' + thumb
+  if (!prefs.channelAvatars || typeof prefs.channelAvatars !== 'object') prefs.channelAvatars = {}
+  prefs.channelAvatars[key] = thumb
+}
+
 function syncGoogleSubscriptions(subs) {
   if (!Array.isArray(subs) || !subs.length) return prefs.subscriptions
+  if (!prefs.channelAvatars || typeof prefs.channelAvatars !== 'object') prefs.channelAvatars = {}
   for (const s of subs) {
     const name = (typeof s === 'string' ? s : (s && s.name)) || ''
+    const thumb = typeof s === 'object' && s ? (s.thumbnail || s.avatar || '') : ''
     if (name && !prefs.subscriptions.some(c => c.toLowerCase() === name.toLowerCase())) prefs.subscriptions.push(name)
+    if (name && thumb) rememberChannelAvatar(name, thumb)
   }
   savePrefs()
   newVideosCache = { ts: 0, key: '', data: null }
@@ -1633,16 +1752,20 @@ const SHORTS_QUERIES = ['#shorts', 'funny shorts', 'dance shorts', 'gaming short
 
 const PREFS_PATH = path.join(CONFIG_DIR, 'prefs.json')
 
-let prefs = { history: [], subscriptions: [] }
+let prefs = { history: [], subscriptions: [], channelAvatars: {} }
 
 function loadPrefs() {
   try {
     if (fs.existsSync(PREFS_PATH)) {
       const p = JSON.parse(fs.readFileSync(PREFS_PATH, 'utf-8'))
-      prefs = { history: Array.isArray(p.history) ? p.history : [], subscriptions: Array.isArray(p.subscriptions) ? p.subscriptions : [] }
+      prefs = {
+        history: Array.isArray(p.history) ? p.history : [],
+        subscriptions: Array.isArray(p.subscriptions) ? p.subscriptions : [],
+        channelAvatars: p.channelAvatars && typeof p.channelAvatars === 'object' ? p.channelAvatars : {},
+      }
     }
   } catch (e) { console.error('[Prefs] load error:', e.message) }
-  return { history: prefs.history, subscriptions: prefs.subscriptions }
+  return { history: prefs.history, subscriptions: prefs.subscriptions, channelAvatars: prefs.channelAvatars }
 }
 
 function savePrefs() {
@@ -2868,7 +2991,7 @@ async function getRichLyrics(track, artist, duration) {
   const name = cleanTrackName(track)
   if (!name) return null
   const by = cleanArtistName(artist)
-  const dur = duration ? Math.round(duration) : null
+  const dur = durationToSeconds(duration) || null
   const withDur = () => { const p = { track: name }; if (by) p.artist = by; if (dur) p.duration = String(dur); return p }
   let results = []
   try { results = await lrcRedSearch(withDur()) } catch (e) { console.warn('[Music] lrc.red search', e.message) }
@@ -2978,6 +3101,263 @@ async function getMusicLyrics({ videoId, title, artist, duration } = {}) {
   return guarded
 }
 
+// ── Lyrics sidecars (bundled with downloads) ────────────────────────────────
+
+// "3:45" / "1:02:03" / 225 -> seconds. Used to match lyric candidates by length.
+function durationToSeconds(d) {
+  if (d == null || d === '') return 0
+  if (typeof d === 'number') return Number.isFinite(d) ? Math.round(d) : 0
+  const parts = String(d).split(':').map((x) => parseInt(x, 10)).filter((n) => !Number.isNaN(n))
+  if (!parts.length) return 0
+  return parts.reduce((acc, n) => acc * 60 + n, 0)
+}
+
+// Serialize synced lyric lines to enhanced LRC ("[mm:ss.xx]<mm:ss.xx>word …"),
+// which the app's own parseLrc and most desktop players understand.
+function syncedToLrc(lines, meta = {}) {
+  const stamp = (t) => {
+    const s = Math.max(0, Number(t) || 0)
+    const m = Math.floor(s / 60)
+    const sec = s - m * 60
+    return `${String(m).padStart(2, '0')}:${sec.toFixed(2).padStart(5, '0')}`
+  }
+  const clean = (s) => String(s || '').replace(/[\r\n]+/g, ' ').trim()
+  const head = []
+  if (clean(meta.title)) head.push(`[ti:${clean(meta.title)}]`)
+  if (clean(meta.artist)) head.push(`[ar:${clean(meta.artist)}]`)
+  if (clean(meta.source)) head.push(`[re:${clean(meta.source)}]`)
+  const body = []
+  for (const line of lines || []) {
+    const words = Array.isArray(line.words) ? line.words : null
+    if (words && words.length) {
+      let seg = ''
+      for (const w of words) {
+        const word = clean(w.w)
+        if (!word) continue
+        seg += `<${stamp(w.t)}>${word} `
+      }
+      body.push(`[${stamp(line.t)}]${seg.trim()}`)
+    } else if (clean(line.text)) {
+      body.push(`[${stamp(line.t)}]${clean(line.text)}`)
+    }
+  }
+  if (!body.length) return ''
+  return head.concat(body).join('\n') + '\n'
+}
+
+// Fetch the track's lyrics and drop them next to the downloaded audio: timed
+// lyrics as "<track>.lrc", otherwise plain text as "<track>.txt".
+async function writeLyricsSidecar(dl) {
+  try {
+    if (!dl.filePath || !fs.existsSync(dl.filePath)) return null
+    const got = await getMusicLyrics({
+      videoId: dl.videoId, title: dl.title, artist: dl.artist, duration: dl.duration,
+    })
+    const base = dl.filePath.replace(/\.[^.]+$/, '')
+    const synced = got && got.ok && Array.isArray(got.synced) ? got.synced : null
+    if (synced && synced.length) {
+      const lrc = syncedToLrc(synced, { title: dl.title, artist: dl.artist, source: got.source })
+      if (lrc) {
+        const p = `${base}.lrc`
+        fs.writeFileSync(p, lrc, 'utf-8')
+        console.log(`[Download] Lyrics saved: ${path.basename(p)} (${got.source || got.syncType || 'synced'})`)
+        return p
+      }
+    }
+    const plain = got && got.lyrics ? String(got.lyrics).trim() : ''
+    if (plain) {
+      const p = `${base}.txt`
+      fs.writeFileSync(p, plain + '\n', 'utf-8')
+      console.log(`[Download] Lyrics saved (plain): ${path.basename(p)}`)
+      return p
+    }
+    console.log(`[Download] No lyrics found for ${dl.videoId}`)
+    return null
+  } catch (e) {
+    console.error('[Download] lyrics sidecar error:', e.message)
+    return null
+  }
+}
+
+// ── Downloaded music helpers ────────────────────────────────────────────────
+
+const AUDIO_EXTS = new Set(['.mp3', '.m4a', '.aac', '.opus', '.ogg', '.oga', '.flac', '.wav'])
+const VIDEO_EXTS = new Set(['.mp4', '.mkv', '.webm', '.mov', '.avi', '.m4v'])
+
+function isAudioFile(filePath) {
+  return AUDIO_EXTS.has(path.extname(String(filePath || '')).toLowerCase())
+}
+
+// Path of a track's saved lyrics (.lrc preferred over .txt), or '' if none.
+function lyricsSidecarFor(filePath) {
+  if (!filePath || typeof filePath !== 'string') return ''
+  const base = filePath.replace(/\.[^.]+$/, '')
+  for (const ext of ['.lrc', '.txt']) {
+    const p = `${base}${ext}`
+    if (fs.existsSync(p)) return p
+  }
+  return ''
+}
+
+// Read a downloaded track's lyric sidecar so it plays with its bundled lyrics
+// even offline. Plays the same shape as getMusicLyrics, or null when absent.
+function readLocalLyrics(filePath) {
+  try {
+    const sidecar = lyricsSidecarFor(filePath)
+    if (!sidecar) return null
+    const raw = fs.readFileSync(sidecar, 'utf-8')
+    if (sidecar.toLowerCase().endsWith('.lrc')) {
+      const lines = parseLrc(raw)
+      if (lines.length) {
+        return { ok: true, synced: lines, syncType: 'rich', source: 'Saved', lyrics: '', footer: 'Lyrics · saved with download' }
+      }
+    }
+    const text = raw.trim()
+    if (text) return { ok: true, synced: null, syncType: 'plain', source: 'Saved', lyrics: text, footer: 'Lyrics · saved with download' }
+    return null
+  } catch (e) {
+    console.warn('[Music] local lyrics', e.message)
+    return null
+  }
+}
+
+// Fields every renderer-side download record needs to be playable as music.
+function musicFieldsFor(filePath, audio) {
+  const localUrl = filePath && fs.existsSync(filePath) ? fileToYtUrl(filePath) : ''
+  const isAudio = !!audio || isAudioFile(filePath)
+  return { localUrl, isAudio, hasLyrics: !!lyricsSidecarFor(filePath) }
+}
+
+// ── Downloaded playlist records ──────────────────────────────────────────────
+// A playlist download is remembered as one ordered group (next to the songs it
+// produced on disk) so the Music → Downloaded tab can show the playlist itself
+// instead of a heap of loose tracks. Stored in the config dir, not the downloads
+// dir, so the downloads scan never picks it up as a file.
+const PLAYLISTS_PATH = path.join(CONFIG_DIR, 'playlists.json')
+
+// Playlist ids with a sync in flight, so two syncs never overlap and the UI can
+// show a spinner. Runtime-only.
+const playlistSyncs = new Map()
+
+function readPlaylists() {
+  try {
+    const list = JSON.parse(fs.readFileSync(PLAYLISTS_PATH, 'utf-8'))
+    return Array.isArray(list) ? list : []
+  } catch {
+    return []
+  }
+}
+
+function writePlaylists(list) {
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true })
+    fs.writeFileSync(PLAYLISTS_PATH, JSON.stringify(list, null, 2), 'utf-8')
+  } catch (e) {
+    console.error('[Playlist] save failed:', e.message)
+  }
+}
+
+// Stable id for a playlist: prefer the YouTube browse id so re-downloading the
+// same playlist updates one entry instead of piling up duplicates.
+function playlistIdFor(meta) {
+  const browseId = meta && meta.browseId
+  if (browseId) return `pl_${browseId}`
+  const title = (meta && meta.title) || 'playlist'
+  const slug = String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60)
+  return `pl_${slug || 'playlist'}`
+}
+
+function upsertPlaylist(record) {
+  const list = readPlaylists()
+  const i = list.findIndex((p) => p.id === record.id)
+  const now = new Date().toISOString()
+  if (i >= 0) list[i] = { ...list[i], ...record, createdAt: list[i].createdAt || record.createdAt, updatedAt: now }
+  else list.push({ ...record, updatedAt: now })
+  writePlaylists(list)
+}
+
+// Patch one ordered slot of a saved playlist (matched by its order index, so
+// duplicate video ids can't collide) and let the renderer know it changed.
+function updatePlaylistTrack(playlistId, order, patch) {
+  const list = readPlaylists()
+  const pl = list.find((p) => p.id === playlistId)
+  if (!pl) return
+  const track = (pl.tracks || []).find((t) => t.order === order)
+  if (track) Object.assign(track, patch)
+  pl.updatedAt = new Date().toISOString()
+  writePlaylists(list)
+  sendToRenderer('playlist-update', { id: pl.id })
+}
+
+// Patch fields on a whole playlist record (the auto-sync switch, the last-sync
+// stamp, or the track list after a sync). `touch` controls whether this counts
+// as a content change: a routine "checked, nothing new" stamp must not reorder
+// the Downloaded tab, but adding songs should.
+function patchPlaylist(playlistId, patch, { touch = true } = {}) {
+  const list = readPlaylists()
+  const pl = list.find((p) => p.id === playlistId)
+  if (!pl) return false
+  Object.assign(pl, patch)
+  if (touch) pl.updatedAt = new Date().toISOString()
+  writePlaylists(list)
+  sendToRenderer('playlist-update', { id: playlistId })
+  return true
+}
+
+// Saved playlists with each track's on-disk presence resolved and playback
+// fields filled in. Slots whose file is gone are dropped; playlists left with
+// no tracks are omitted entirely. Tracks always come back in playlist order.
+function getDownloadedPlaylists() {
+  const out = []
+  for (const pl of readPlaylists()) {
+    const tracks = (Array.isArray(pl.tracks) ? pl.tracks : [])
+      .slice()
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      .map((t) => {
+        const fp = t.filePath && fs.existsSync(t.filePath) ? t.filePath : ''
+        if (!fp) return null
+        let size = 0
+        try { size = fs.statSync(fp).size } catch {}
+        return {
+          id: `${pl.id}:${t.order}`,
+          videoId: t.videoId || '',
+          title: t.title || t.fileName || 'Unknown track',
+          artist: t.artist || '',
+          duration: t.duration || '',
+          thumbnail: t.thumbnail || '',
+          fileName: t.fileName || path.basename(fp),
+          filePath: fp,
+          totalBytes: size,
+          format: path.extname(fp),
+          ...musicFieldsFor(fp, true),
+        }
+      })
+      .filter(Boolean)
+    if (!tracks.length) continue
+    const totalBytes = tracks.reduce((s, t) => s + (t.totalBytes || 0), 0)
+    out.push({
+      id: pl.id,
+      title: pl.title || 'Playlist',
+      artist: pl.artist || '',
+      thumbnail: pl.thumbnail || tracks[0].thumbnail || '',
+      browseId: pl.browseId || '',
+      createdAt: pl.createdAt || '',
+      updatedAt: pl.updatedAt || '',
+      // Auto-download new songs added to the playlist. Defaults on; old records
+      // predate the flag and are treated as watched.
+      autoSync: pl.autoSync !== false,
+      lastSyncAt: pl.lastSyncAt || '',
+      syncing: playlistSyncs.has(pl.id),
+      trackCount: tracks.length,
+      totalBytes,
+      hasLyrics: tracks.some((t) => t.hasLyrics),
+      tracks,
+    })
+  }
+  out.sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))
+  return out
+}
+
 // ── Signed-in library (reuses the app's hidden authed window) ───────────────
 
 let musicAuthedWin = null
@@ -3015,7 +3395,14 @@ function destroyMusicAuthedWindow() {
 // expects for signed-in calls (cookies alone are treated as anonymous here).
 async function authedMusicBrowse(body) {
   const win = await ensureMusicAuthedWindow()
-  const sapisid = auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-1PAPISID'] || ''
+  let sapisid = auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-1PAPISID'] || ''
+  // The SAPISID signs the request; without it WEB_REMIX treats us as anonymous
+  // even though Chromium still attaches the cookies. If the backup lacks it,
+  // pull the live cookies out of the session and retry once.
+  if (!sapisid) {
+    try { await captureCookiesFromSession() } catch (e) { /* ignore */ }
+    sapisid = auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-1PAPISID'] || ''
+  }
   const result = await win.webContents.executeJavaScript(`
     (async () => {
       try {
@@ -3067,7 +3454,9 @@ async function authedMusicBrowse(body) {
 }
 
 function musicSignedIn() {
-  return !!(auth.cookies && (auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-1PSID'] || auth.cookiesByKey['SID'] || auth.cookiesByKey['HSID']))
+  // Trust the cookie jar over the (possibly stale/empty) backup string: the
+  // SAPISID is what actually authenticates the signed-in music browse.
+  return !!(auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['__Secure-1PSID'] || auth.cookiesByKey['SID'] || auth.cookiesByKey['HSID'])
 }
 
 async function getMusicLibrary() {
@@ -3486,12 +3875,16 @@ const DEFAULT_SETTINGS = {
   showDescriptions: true,
   reduceMotion: false,
   playbackMode: 'inApp', // 'inApp' | 'iframe'
-  smartDlClipboard: false, // smart-download from clipboard is OFF by default; FYP feed is the default source
-  smartDlLimit: 10,        // max smart downloads in total (0 = unlimited)
+  smartDlEnabled: false,   // Smart Downloads: auto-download from the For You feed
+  smartDlClipboard: false, // Smart Downloads: also download YouTube links copied to the clipboard
+  smartDlLimit: 10,        // max smart downloads per source (0 = unlimited)
   smartDlConcurrency: 2,   // max concurrent smart downloads
-  smartDlCount: 0,         // persistent total count of smart downloads started
+  smartDlCount: 0,         // persistent count of For You smart downloads started
+  smartDlClipboardCount: 0, // persistent count of clipboard smart downloads started
   smartDlInterval: 60,     // minutes between auto-download checks
   fypSource: 'auto',       // 'auto' (personalized when signed in) | 'signedIn' | 'anon'
+  welcomed: false,
+  navPosition: 'side',     // 'side' | 'top'
 }
 
 let settingsCache = { ...DEFAULT_SETTINGS }
@@ -3619,6 +4012,7 @@ function streamDownload(downloadId) {
       dl.status = 'failed'
       dl.error = `HTTP ${response.statusCode}`
       sendToRenderer('download-progress', { id: downloadId, status: 'failed', error: dl.error })
+      if (dl._settle) dl._settle({ id: downloadId, ok: false, videoId: dl.videoId, error: dl.error })
       return
     }
 
@@ -3632,7 +4026,8 @@ function streamDownload(downloadId) {
       else dl.fileName = sanitizeFilename(`${dl.title || dl.videoId}_${dl.quality}`) + (dl.format === 'mp3' ? '.mp3' : '.mp4')
     }
 
-    dl.filePath = path.join(DOWNLOADS_DIR, dl.fileName)
+    dl.dir = dl.dir || downloadDirFor(dl)
+    dl.filePath = path.join(dl.dir, dl.fileName)
     dl.status = 'downloading'
     dl.startTime = Date.now()
 
@@ -3697,7 +4092,12 @@ function streamDownload(downloadId) {
           totalBytes: dl.totalBytes, videoId: dl.videoId, title: dl.title,
           thumbnail: dl.thumbnail, quality: dl.quality, format: dl.format,
           completedAt: new Date().toISOString(),
+          artist: dl.artist || '', duration: dl.duration || '', audio: !!dl.audio,
+          ...musicFieldsFor(dl.filePath, dl.audio),
         })
+        const finish = () => { if (dl._settle) dl._settle({ id: downloadId, ok: true, videoId: dl.videoId, filePath: dl.filePath }) }
+        if (dl.withLyrics) writeLyricsSidecar(dl).finally(finish)
+        else finish()
       })
     })
 
@@ -3707,6 +4107,7 @@ function streamDownload(downloadId) {
       fileStream.end()
       try { fs.unlinkSync(dl.filePath) } catch {}
       sendToRenderer('download-progress', { id: downloadId, status: 'failed', error: err.message })
+      if (dl._settle) dl._settle({ id: downloadId, ok: false, videoId: dl.videoId, error: err.message })
     })
   })
 
@@ -3714,6 +4115,7 @@ function streamDownload(downloadId) {
     dl.status = 'failed'
     dl.error = err.message
     sendToRenderer('download-progress', { id: downloadId, status: 'failed', error: err.message })
+    if (dl._settle) dl._settle({ id: downloadId, ok: false, videoId: dl.videoId, error: err.message })
   })
 
   dl.request = request
@@ -3759,7 +4161,18 @@ function persistThumbnail(videoId, url) {
   })
 }
 
-async function startDownload(videoId, quality, format, title, thumbnail, audio) {
+// True when a download is audio-only (a saved song) rather than a video.
+function isAudioDownload(dl) {
+  return !!dl.audio || dl.format === 'mp3' || dl.format === 'm4a' ||
+    String(dl.quality || '').toLowerCase().includes('audio')
+}
+
+// Folder a download belongs in: songs to music/, everything else to videos/.
+function downloadDirFor(dl) {
+  return isAudioDownload(dl) ? MUSIC_DIR : VIDEOS_DIR
+}
+
+async function startDownload(videoId, quality, format, title, thumbnail, audio, opts = {}) {
   const dlId = `dl_${++downloadIdCounter}`
 
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`
@@ -3767,13 +4180,26 @@ async function startDownload(videoId, quality, format, title, thumbnail, audio) 
 
   const dl = {
     id: dlId, videoId, quality, format, title, thumbnail, audio: !!audio,
+    // Music downloads carry artist/length for lyric matching; withLyrics
+    // defaults on for audio so saved songs get an .lrc sidecar too.
+    artist: opts.artist || '',
+    duration: opts.duration || '',
+    withLyrics: opts.withLyrics !== undefined ? !!opts.withLyrics : !!audio,
     fileName, filePath: '', url: videoUrl,
+    dir: downloadDirFor({ audio, format, quality }),
     status: 'downloading', progress: 0, speed: 0,
     transferredBytes: 0, totalBytes: 0,
     startTime: Date.now(), error: null,
     fileStream: null, response: null, request: null,
     process: null,
+    done: null, _settle: null,
   }
+  // Resolves once the download is fully done (including its lyrics sidecar), so
+  // a batch downloader can move on to the next track instead of firing them all
+  // at once.
+  dl.done = new Promise((res) => {
+    dl._settle = (result) => { res(result) }
+  })
   activeDownloads.set(dlId, dl)
 
   // Save the thumbnail locally so completed downloads have a persistent poster.
@@ -3808,9 +4234,12 @@ function startManualYtDlp(dlId) {
 
   const qualityNum = (dl.quality?.match(/(\d+)/)?.[1]) ? parseInt(dl.quality.match(/(\d+)/)[1]) : 720
   const height = Math.min(qualityNum || 720, 1080)
-  const isAudio = dl.audio || dl.format === 'mp3' || dl.format === 'm4a' || (dl.quality || '').toLowerCase().includes('audio')
+  const isAudio = isAudioDownload(dl)
 
-  const outputTemplate = path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s')
+  // Songs go to music/, videos to videos/.
+  const targetDir = dl.dir || (isAudio ? MUSIC_DIR : VIDEOS_DIR)
+  dl.dir = targetDir
+  const outputTemplate = path.join(targetDir, '%(title)s [%(id)s].%(ext)s')
 
   const args = []
   if (isAudio) {
@@ -3910,12 +4339,13 @@ function startManualYtDlp(dlId) {
       dl.progress = 100
       dl.speed = 0
 
-      const candidates = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.includes(dl.videoId))
+      const targetDir = dl.dir || VIDEOS_DIR
+      const candidates = fs.readdirSync(targetDir).filter(f => f.includes(dl.videoId))
       if (candidates.length > 0) {
         dl.fileName = candidates[0]
-        dl.filePath = path.join(DOWNLOADS_DIR, candidates[0])
+        dl.filePath = path.join(targetDir, candidates[0])
       } else if (dl.fileName) {
-        dl.filePath = path.join(DOWNLOADS_DIR, dl.fileName)
+        dl.filePath = path.join(targetDir, dl.fileName)
       }
 
       try {
@@ -3932,12 +4362,19 @@ function startManualYtDlp(dlId) {
         thumbnail: dl.thumbnail && dl.thumbnail.startsWith('ytfile://') ? dl.thumbnail : (thumbUrlFor(dl.videoId) || dl.thumbnail),
         quality: dl.quality, format: dl.format,
         completedAt: new Date().toISOString(),
+        artist: dl.artist || '', duration: dl.duration || '', audio: !!dl.audio,
+        ...musicFieldsFor(dl.filePath, dl.audio),
       })
+
+      const finish = () => { if (dl._settle) dl._settle({ id: dlId, ok: true, videoId: dl.videoId, filePath: dl.filePath }) }
+      if (dl.withLyrics) writeLyricsSidecar(dl).finally(finish)
+      else finish()
     } else {
       dl.status = 'failed'
       dl.error = `yt-dlp exited with code ${code}`
       console.error(`[Download] Failed (code ${code})`)
       sendToRenderer('download-progress', { id: dlId, status: 'failed', error: dl.error })
+      if (dl._settle) dl._settle({ id: dlId, ok: false, videoId: dl.videoId, error: dl.error })
     }
   })
 
@@ -3946,6 +4383,7 @@ function startManualYtDlp(dlId) {
     dl.error = err.message
     console.error(`[Download] Process error: ${err.message}`)
     sendToRenderer('download-progress', { id: dlId, status: 'failed', error: err.message })
+    if (dl._settle) dl._settle({ id: dlId, ok: false, videoId: dl.videoId, error: err.message })
   })
 }
 
@@ -3960,6 +4398,7 @@ function cancelDownload(downloadId) {
   if (dl.fileStream) dl.fileStream.end()
   try { if (dl.filePath && fs.existsSync(dl.filePath)) fs.unlinkSync(dl.filePath) } catch {}
   activeDownloads.delete(downloadId)
+  if (dl._settle) dl._settle({ id: downloadId, ok: false, cancelled: true, videoId: dl.videoId })
   return true
 }
 
@@ -3988,34 +4427,326 @@ function getCompletedDownloads() {
         thumbnail: dl.thumbnail && dl.thumbnail.startsWith('ytfile://') ? dl.thumbnail : (thumbUrlFor(dl.videoId) || dl.thumbnail),
         fileName: dl.fileName, filePath: dl.filePath, quality: dl.quality, format: dl.format,
         totalBytes: dl.totalBytes, status: 'completed',
+        artist: dl.artist || '', duration: dl.duration || '', audio: !!dl.audio,
+        ...musicFieldsFor(dl.filePath, dl.audio),
       })
     }
   })
 
-  try {
-    const files = fs.readdirSync(DOWNLOADS_DIR)
+  // Scan both media folders (music/, videos/), and any file still sitting at
+  // the top level, so a download is listed wherever it landed.
+  const mediaExt = /\.(mp4|webm|mkv|mp3|m4a|aac|opus|ogg|flac|wav)$/i
+  for (const dir of [...MEDIA_DIRS, DOWNLOADS_DIR]) {
+    let files = []
+    try { files = fs.readdirSync(dir) } catch { continue }
     for (const f of files) {
-      const fp = path.join(DOWNLOADS_DIR, f)
-      const stat = fs.statSync(fp)
-      if (stat.isFile()) {
-        const existsInActive = completed.some(c => c.fileName === f)
-        if (!existsInActive && !activeDownloads.has(`fs_${f}`)) {
-          // Recover the video id from yt-dlp filenames: "Title [ID].ext"
-          const idMatch = f.match(/\[([a-zA-Z0-9_-]{11})\]\.[^.]+$/)
-          const videoId = idMatch ? idMatch[1] : ''
-          const localThumb = videoId ? thumbUrlFor(videoId) : ''
-          completed.push({
-            id: `fs_${f}`, videoId, title: f.replace(/\[[a-zA-Z0-9_-]{11}\]\.[^.]+$/, '').trim() || f.replace(/\.[^.]+$/, ''),
-            thumbnail: localThumb, fileName: f, filePath: fp,
-            quality: '', format: path.extname(f),
-            totalBytes: stat.size, status: 'completed',
-          })
-        }
+      const fp = path.join(dir, f)
+      let stat
+      try { stat = fs.statSync(fp) } catch { continue }
+      if (!stat.isFile()) continue
+      // Lyric sidecars (.lrc/.txt written next to a downloaded track) are not
+      // downloads themselves; hide them from the list.
+      if (/\.(lrc|txt)$/i.test(f)) {
+        const stem = f.replace(/\.[^.]+$/, '')
+        if (files.some(x => x !== f && x.startsWith(stem + '.') && mediaExt.test(x))) continue
+      }
+      const existsInActive = completed.some(c => c.fileName === f && path.dirname(c.filePath || '') === dir)
+      const fsId = `fs_${path.basename(dir)}_${f}`
+      if (!existsInActive && !activeDownloads.has(fsId)) {
+        // Recover the video id from yt-dlp filenames: "Title [ID].ext"
+        const idMatch = f.match(/\[([a-zA-Z0-9_-]{11})\]\.[^.]+$/)
+        const videoId = idMatch ? idMatch[1] : ''
+        const localThumb = videoId ? thumbUrlFor(videoId) : ''
+        completed.push({
+          id: fsId, videoId, title: f.replace(/\[[a-zA-Z0-9_-]{11}\]\.[^.]+$/, '').trim() || f.replace(/\.[^.]+$/, ''),
+          thumbnail: localThumb, fileName: f, filePath: fp,
+          quality: '', format: path.extname(f), totalBytes: stat.size, status: 'completed',
+          ...musicFieldsFor(fp, false),
+        })
       }
     }
-  } catch {}
+  }
 
   return completed
+}
+
+// Download a whole playlist/album as audio, each track with a lyrics sidecar.
+// Tracks are processed a few at a time (yt-dlp already saturates the link on its
+// own); progress rides the normal per-track download events, and the batch ends
+// with a summary toast.
+let playlistBatchCounter = 0
+
+async function downloadPlaylist({ playlist, tracks, concurrency = 2 } = {}) {
+  const list = (Array.isArray(tracks) ? tracks : []).filter((t) => t && t.videoId)
+  const batchId = `pl_${++playlistBatchCounter}`
+  if (!list.length) return { batchId, total: 0, started: false }
+
+  // Register the playlist up front, with every track in its original order, so
+  // it appears in the Downloaded tab right away and fills in as songs land.
+  const meta = playlist || {}
+  const playlistId = playlistIdFor(meta)
+  const record = {
+    id: playlistId,
+    title: meta.title || 'Playlist',
+    artist: meta.artist || '',
+    thumbnail: meta.thumbnail || '',
+    browseId: meta.browseId || '',
+    createdAt: new Date().toISOString(),
+    tracks: list.map((t, i) => ({
+      videoId: t.videoId,
+      title: t.title || '',
+      artist: t.artist || '',
+      duration: t.duration || '',
+      thumbnail: t.thumbnail || '',
+      order: i,
+      status: 'pending',
+      fileName: '',
+      filePath: '',
+    })),
+  }
+  // Only a brand-new playlist gets the auto-sync default; re-downloading one the
+  // user switched off must not silently turn it back on (upsert merges, so the
+  // existing flag survives when we omit it here).
+  if (!readPlaylists().some((p) => p.id === playlistId)) record.autoSync = true
+  upsertPlaylist(record)
+  sendToRenderer('playlist-update', { id: playlistId })
+
+  downloadPlaylistTracks(playlistId, list.map((t, i) => ({ ...t, order: i })), { concurrency }).then((state) => {
+    const msg = state.failed
+      ? `Playlist download finished: ${state.completed}/${state.total} saved, ${state.failed} failed`
+      : `Playlist download finished: ${state.completed} track${state.completed === 1 ? '' : 's'} saved with lyrics`
+    sendToRenderer('toast', { type: state.failed ? 'warning' : 'success', message: msg, duration: 6000 })
+    console.log(`[Download] Playlist ${batchId} — ${msg}`)
+  })
+
+  return { batchId, total: list.length, started: true, playlistId }
+}
+
+// Download a set of ordered tracks into an already-registered playlist, a few at
+// a time; each track is matched back to its saved slot by its order index.
+// Shared by the manual "Download this playlist" action and by auto-sync.
+async function downloadPlaylistTracks(playlistId, items, { concurrency = 2 } = {}) {
+  const list = (Array.isArray(items) ? items : []).filter((t) => t && t.videoId)
+  const state = { total: list.length, completed: 0, failed: 0 }
+  let idx = 0
+
+  const worker = async () => {
+    while (idx < list.length) {
+      const t = list[idx++]
+      try {
+        const dlId = await startDownload(
+          t.videoId, 'audio', 'mp3', t.title || '', t.thumbnail || '', true,
+          { artist: t.artist || '', duration: t.duration || '', withLyrics: true },
+        )
+        const dl = activeDownloads.get(dlId)
+        const res = dl && dl.done ? await dl.done : { ok: false }
+        if (res && res.ok) {
+          state.completed++
+          const filePath = res.filePath || (dl && dl.filePath) || ''
+          const fileName = filePath ? path.basename(filePath) : (dl && dl.fileName) || ''
+          updatePlaylistTrack(playlistId, t.order, { fileName, filePath, status: 'done' })
+        } else {
+          state.failed++
+          updatePlaylistTrack(playlistId, t.order, { status: 'failed' })
+        }
+      } catch (e) {
+        console.error('[Download] playlist track failed:', e.message)
+        state.failed++
+        updatePlaylistTrack(playlistId, t.order, { status: 'failed' })
+      }
+    }
+  }
+
+  const n = Math.max(1, Math.min(concurrency, list.length))
+  await Promise.all(Array.from({ length: n }, () => worker()))
+  return state
+}
+
+// ─── Playlist auto-sync ──────────────────────────────────────────────────────
+// Downloaded playlists are "watched": every so often we re-fetch the playlist
+// from YouTube Music and download any songs that were added since the last look.
+// We never delete — songs removed from the playlist keep their downloaded file —
+// and songs whose download previously failed (or whose file vanished) are
+// retried. Runs at startup and on a timer, plus on demand from the UI.
+
+const SYNC_INTERVAL_MS = 15 * 60 * 1000
+let playlistSyncTimer = null
+
+// Reject if a promise doesn't settle in time (the signed-in fetch runs inside a
+// hidden window and has no timeout of its own).
+function withTimeout(promise, ms, label) {
+  let timer = null
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => { if (timer) clearTimeout(timer) })
+}
+
+// Fetch every track of a playlist, following continuations. Prefers the signed-in
+// page so private/own playlists work, falling back to the public endpoint.
+async function fetchPlaylistTracks(browseId) {
+  if (!browseId) return null
+  const post = async (body) => {
+    if (musicSignedIn()) {
+      const j = await authedMusicBrowse(body)
+      if (j) return j
+    }
+    return musicPost('browse', body)
+  }
+  const first = await post({ browseId })
+  if (!first) return null
+  const head = musicBrowseResult(first)
+  const all = [...head.tracks]
+  let continuation = head.continuation
+  let guard = 0
+  while (continuation && guard++ < 50) {
+    const j = await post({ continuation })
+    if (!j) break
+    const res = musicBrowseResult(j)
+    if (!res.tracks.length) break
+    all.push(...res.tracks)
+    if (!res.continuation || res.continuation === continuation) break
+    continuation = res.continuation
+  }
+  const seen = new Set()
+  const tracks = all.filter((t) => t.videoId && !seen.has(t.videoId) && seen.add(t.videoId))
+  return { header: head.header, tracks }
+}
+
+// Reconcile the tracks we already saved with the playlist as it is live now:
+// append songs that are new (in playlist order), backfill display metadata that
+// older records lack, and pick the slots that still need a file (brand-new
+// songs, earlier failures, or files deleted from disk). Nothing is ever removed
+// — a song taken off the playlist keeps its downloaded file. Pure, so it can be
+// reasoned about (and tested) on its own.
+function reconcilePlaylistTracks({ existing = [], fetched = [], inFlight = new Set(), fileExists = () => false } = {}) {
+  const tracks = (Array.isArray(existing) ? existing : []).map((t) => ({ ...t }))
+  const known = new Set(tracks.map((t) => t.videoId).filter(Boolean))
+  const fresh = (Array.isArray(fetched) ? fetched : []).filter((f) => f && f.videoId)
+  const freshByVideo = new Map(fresh.map((f) => [f.videoId, f]))
+  let dirty = false
+
+  // Backfill metadata (titles/artists can be filled in after the fact).
+  for (const t of tracks) {
+    const f = freshByVideo.get(t.videoId)
+    if (!f) continue
+    for (const k of ['title', 'artist', 'duration', 'thumbnail']) {
+      if (!t[k] && f[k]) { t[k] = f[k]; dirty = true }
+    }
+  }
+
+  // Songs present now but never recorded before, appended after what we have in
+  // the order the playlist lists them.
+  let maxOrder = tracks.reduce((m, t) => Math.max(m, typeof t.order === 'number' ? t.order : -1), -1)
+  let added = 0
+  for (const f of fresh) {
+    if (known.has(f.videoId)) continue
+    known.add(f.videoId)
+    tracks.push({
+      videoId: f.videoId,
+      title: f.title || '',
+      artist: f.artist || '',
+      duration: f.duration || '',
+      thumbnail: f.thumbnail || '',
+      order: ++maxOrder,
+      status: 'pending',
+      fileName: '',
+      filePath: '',
+    })
+    added++
+    dirty = true
+  }
+
+  // Slots needing a download: no file on disk, and not already downloading.
+  const queue = tracks
+    .filter((t) => {
+      if (t.filePath && fileExists(t.filePath)) return false
+      return !inFlight.has(t.videoId)
+    })
+    .map((t) => ({ ...t }))
+
+  return { tracks, added, queue, dirty }
+}
+
+// Reconcile one saved playlist with its live YouTube Music version.
+async function runPlaylistSync(playlistId, { force = false } = {}) {
+  const pl = readPlaylists().find((p) => p.id === playlistId)
+  if (!pl) return { ok: false, reason: 'missing' }
+  if (!pl.browseId) return { ok: false, reason: 'no-browse-id' }
+  if (!force && pl.autoSync === false) return { ok: false, reason: 'disabled' }
+  if (ytdlpAvailable === false) return { ok: false, reason: 'no-ytdlp' }
+  try {
+    if (net && typeof net.isOnline === 'function' && !net.isOnline()) return { ok: false, reason: 'offline' }
+  } catch { /* ignore */ }
+
+  let fetched = null
+  try {
+    fetched = await withTimeout(fetchPlaylistTracks(pl.browseId), 45000, 'playlist fetch')
+  } catch (e) {
+    console.error(`[PlaylistSync] fetch failed for ${playlistId}:`, e.message)
+    return { ok: false, reason: 'fetch-failed', error: e.message }
+  }
+  if (!fetched || !fetched.tracks.length) return { ok: false, reason: 'no-tracks' }
+
+  const inFlight = new Set([...activeDownloads.values()].map((d) => d.videoId))
+  const { tracks, added, queue, dirty } = reconcilePlaylistTracks({
+    existing: pl.tracks,
+    fetched: fetched.tracks,
+    inFlight,
+    fileExists: (p) => fs.existsSync(p),
+  })
+
+  if (dirty) patchPlaylist(playlistId, { tracks })
+
+  if (!queue.length) {
+    patchPlaylist(playlistId, { lastSyncAt: new Date().toISOString() }, { touch: false })
+    return { ok: true, added: 0, downloaded: 0, total: fetched.tracks.length }
+  }
+
+  sendToRenderer('playlist-sync', { id: playlistId, status: 'started', pending: queue.length, added })
+  const state = await downloadPlaylistTracks(playlistId, queue, { concurrency: 2 })
+  patchPlaylist(playlistId, { lastSyncAt: new Date().toISOString() }, { touch: false })
+
+  if (added > 0) {
+    const base = `${added} new song${added === 1 ? '' : 's'} added to “${pl.title}”`
+    const msg = state.failed ? `${base} (${state.failed} failed)` : base
+    sendToRenderer('toast', { type: state.failed ? 'warning' : 'success', message: msg, duration: 6000 })
+  }
+  console.log(`[PlaylistSync] ${pl.title}: +${added} new, ${state.completed} downloaded, ${state.failed} failed`)
+  sendToRenderer('playlist-sync', { id: playlistId, status: 'done', added, failed: state.failed })
+  return { ok: true, added, downloaded: state.completed, failed: state.failed, total: fetched.tracks.length }
+}
+
+function syncPlaylist(playlistId, opts = {}) {
+  if (!playlistId) return Promise.resolve({ ok: false, reason: 'missing' })
+  if (playlistSyncs.has(playlistId)) return playlistSyncs.get(playlistId)
+  const p = runPlaylistSync(playlistId, opts).finally(() => { playlistSyncs.delete(playlistId) })
+  playlistSyncs.set(playlistId, p)
+  return p
+}
+
+// Check every watched playlist, one after another so a big backfill can't storm
+// the network. The background sweep waits for other downloads to finish; a
+// user-pressed "Sync all" runs regardless.
+async function syncAllPlaylists({ force = false, background = false } = {}) {
+  if (background && activeDownloads.size > 0) return { ok: true, skipped: 'busy', count: 0, results: [] }
+  const ids = readPlaylists()
+    .filter((p) => p.browseId && (force || p.autoSync !== false))
+    .map((p) => p.id)
+  const results = []
+  for (const id of ids) {
+    try { results.push({ id, ...(await syncPlaylist(id, { force })) }) }
+    catch (e) { results.push({ id, ok: false, error: e.message }) }
+  }
+  return { ok: true, count: ids.length, results }
+}
+
+function startPlaylistSyncScheduler() {
+  if (playlistSyncTimer) return
+  // Give startup (auth cookie harvest, window load) a moment to settle first.
+  setTimeout(() => { syncAllPlaylists({ background: true }).catch(() => {}) }, 20 * 1000)
+  playlistSyncTimer = setInterval(() => { syncAllPlaylists({ background: true }).catch(() => {}) }, SYNC_INTERVAL_MS)
+  if (playlistSyncTimer.unref) playlistSyncTimer.unref()
 }
 
 // ─── Smart Download (Clipboard Watcher + yt-dlp) ─────────────────────────────
@@ -4121,7 +4852,7 @@ function parseYtdlpProgress(line) {
   return null
 }
 
-function startSmartDownload(videoId, url, onDone) {
+function startSmartDownload(videoId, url, onDone, source = 'fyp') {
   if (ytdlpAvailable === false) {
     console.error('[SmartDL] yt-dlp not available, cannot start download')
     sendToRenderer('toast', { type: 'error', message: 'yt-dlp is not installed. Smart downloads disabled.', duration: 6000 })
@@ -4130,7 +4861,7 @@ function startSmartDownload(videoId, url, onDone) {
 
   const dlId = `smart_${++smartDlIdCounter}`
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`
-  const outputTemplate = path.join(DOWNLOADS_DIR, '%(title)s [%(id)s].%(ext)s')
+  const outputTemplate = path.join(VIDEOS_DIR, '%(title)s [%(id)s].%(ext)s')
 
   const args = [
     '-f', 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]',
@@ -4151,7 +4882,7 @@ function startSmartDownload(videoId, url, onDone) {
   })
 
   const dl = {
-    id: dlId, videoId, url, status: 'starting',
+    id: dlId, videoId, url, status: 'starting', source,
     title: '', fileName: '', filePath: '',
     progress: 0, speed: '', eta: '', totalSize: '',
     process: proc, startedAt: Date.now(),
@@ -4232,12 +4963,12 @@ function startSmartDownload(videoId, url, onDone) {
       dl.progress = 100
       dl.speed = ''
 
-      const candidates = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.includes(videoId))
+      const candidates = fs.readdirSync(VIDEOS_DIR).filter(f => f.includes(videoId))
       if (candidates.length > 0) {
         dl.fileName = candidates[0]
-        dl.filePath = path.join(DOWNLOADS_DIR, candidates[0])
+        dl.filePath = path.join(VIDEOS_DIR, candidates[0])
       } else if (dl.fileName) {
-        dl.filePath = path.join(DOWNLOADS_DIR, dl.fileName)
+        dl.filePath = path.join(VIDEOS_DIR, dl.fileName)
       }
 
       try {
@@ -4265,6 +4996,9 @@ function startSmartDownload(videoId, url, onDone) {
       dl.error = `yt-dlp exited with code ${code}`
       console.error(`[SmartDL] Failed (code ${code}): ${dl.title || dl.videoId}`)
       fireNotify('Smart Download Failed', `${dl.title || dl.videoId}: exit code ${code}`)
+      // Hand the slot back so the same link can be retried and a failure
+      // doesn't silently consume this source's budget.
+      releaseSmartDlSlot(dl.videoId, dl.source)
 
       sendToRenderer('smart-dl-progress', {
         id: dlId, videoId: dl.videoId, status: 'failed',
@@ -4279,6 +5013,7 @@ function startSmartDownload(videoId, url, onDone) {
     dl.error = err.message
     console.error(`[SmartDL] Process error: ${err.message}`)
     fireNotify('Smart Download Error', err.message)
+    releaseSmartDlSlot(dl.videoId, dl.source)
 
     sendToRenderer('smart-dl-progress', {
       id: dlId, videoId: dl.videoId, status: 'failed',
@@ -4320,13 +5055,15 @@ function cancelSmartDownload(dlId) {
       if (dl.process && !dl.process.killed) dl.process.kill('SIGKILL')
     }, 3000)
   }
+  releaseSmartDlSlot(dl.videoId, dl.source)
   smartDownloads.delete(dlId)
   sendToRenderer('smart-dl-cancelled', { id: dlId })
   return true
 }
 
 function checkClipboard() {
-  if (!smartDlEnabled || !smartDlClipboard) return
+  // The clipboard source is independent of the For You feed toggle.
+  if (!smartDlClipboard) return
 
   let text = ''
   try {
@@ -4346,11 +5083,21 @@ function checkClipboard() {
   const alreadyActive = [...smartDownloads.values()].some(d => d.videoId === id && d.status !== 'failed' && d.status !== 'cancelled')
   if (alreadyActive) return
 
-  // Respect the persistent total cap; reserve a slot or skip.
-  if (!reserveSmartDlSlot(id)) return
+  // Respect this source's own cap. Unlike the automatic For You feed, a
+  // clipboard link is a deliberate user action, so say why nothing happened
+  // instead of failing silently.
+  if (smartDlLimitReached('clipboard')) {
+    sendToRenderer('toast', {
+      type: 'error',
+      message: `Clipboard download skipped: limit of ${getSmartDlLimit()} reached. Raise the limit or reset the counter in Settings, then copy the link again.`,
+      duration: 8000,
+    })
+    return
+  }
+  if (!reserveSmartDlSlot(id, 'clipboard')) return
 
   console.log(`[SmartDL] Detected YouTube URL in clipboard: ${url}`)
-  startSmartDownload(id, url)
+  startSmartDownload(id, url, null, 'clipboard')
 }
 
 function startClipboardWatcher() {
@@ -4371,31 +5118,97 @@ function stopClipboardWatcher() {
 
 // ─── Smart Download: For You recommendations (default source) ───────────────
 
-// True if a video id is already on disk (as a downloaded file) — we never
-// re-download something we already have.
-function isAlreadyDownloaded(videoId) {
-  try {
-    const files = fs.readdirSync(DOWNLOADS_DIR)
-    return files.some(f => f.includes(`[${videoId}]`))
-  } catch {
-    return false
+// Find the media file for a video id in either media folder (sidecars excluded).
+function findMediaFile(videoId) {
+  if (!videoId) return ''
+  for (const dir of MEDIA_DIRS) {
+    try {
+      const f = fs.readdirSync(dir).find(x => x.includes(`[${videoId}]`) && !/\.(lrc|txt)$/i.test(x))
+      if (f) return path.join(dir, f)
+    } catch { /* folder may not exist yet */ }
   }
+  return ''
+}
+
+// True if a video id is already on disk (as a downloaded file) — we never
+// re-download something we already have. Both media folders are searched.
+function isAlreadyDownloaded(videoId) {
+  return !!findMediaFile(videoId)
+}
+
+// Playlist records remember each track's saved file path. After the one-time
+// music/videos tidy-up (or any move on disk) those paths can go stale, so look
+// the track up again by video id and rewrite the record.
+function repairPlaylistPaths() {
+  let changed = false
+  const list = readPlaylists()
+  for (const p of list) {
+    for (const t of (p && p.tracks) || []) {
+      if (!t || !t.videoId) continue
+      if (t.filePath && fs.existsSync(t.filePath)) continue
+      const found = findMediaFile(t.videoId)
+      if (found) {
+        t.filePath = found
+        t.fileName = path.basename(found)
+        changed = true
+      }
+    }
+  }
+  if (changed) writePlaylists(list)
 }
 
 function isActiveSmartDownload(videoId) {
   return [...smartDownloads.values()].some(d => d.videoId === videoId && d.status !== 'failed' && d.status !== 'cancelled')
 }
 
-// Concurrency + total limit are configured via settings (smartDlConcurrency,
-// smartDlLimit). smartDlCount is a PERSISTENT counter of smart downloads started
-// across all sessions, so the total number of smart downloads can never exceed
-// the chosen limit (it is not reset per session).
+// Concurrency + limit are configured via settings (smartDlConcurrency,
+// smartDlLimit). Each SOURCE keeps its own persistent counter — smartDlCount for
+// the For You feed and smartDlClipboardCount for the clipboard — so one source
+// can never exhaust the other's budget. Counters persist across sessions (they
+// are not reset per session); a failed or cancelled download releases its slot.
+
+// True if this source's cap has been reached.
+function smartDlLimitReached(source = 'fyp') {
+  const limit = getSmartDlLimit()
+  if (limit <= 0) return false
+  return smartDlCountFor(source) >= limit
+}
+
+function smartDlCountFor(source) {
+  const key = source === 'clipboard' ? 'smartDlClipboardCount' : 'smartDlCount'
+  const n = parseInt(settingsCache[key], 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// Reserve one slot against this source's cap. Only one reservation may be made
+// per video id; returns true if the download is allowed to proceed.
+function reserveSmartDlSlot(videoId, source = 'fyp') {
+  if (smartDlLimitReached(source)) return false
+  if (processedUrls.has(videoId)) return false
+  processedUrls.set(videoId, { via: source, detectedAt: Date.now() })
+  const key = source === 'clipboard' ? 'smartDlClipboardCount' : 'smartDlCount'
+  const next = smartDlCountFor(source) + 1
+  saveSettings({ [key]: next })
+  console.log(`[SmartDL] Reserved ${source} slot (${next}/${getSmartDlLimit() || 'unlimited'}) for: ${videoId}`)
+  return true
+}
+
+// Hand a slot back when a download did not finish, so a failed or cancelled
+// attempt doesn't silently burn the budget and the same link can be retried.
+function releaseSmartDlSlot(videoId, source = 'fyp') {
+  if (!videoId) return
+  processedUrls.delete(videoId)
+  const key = source === 'clipboard' ? 'smartDlClipboardCount' : 'smartDlCount'
+  const cur = smartDlCountFor(source)
+  if (cur > 0) saveSettings({ [key]: cur - 1 })
+}
+
 const fypQueued = []          // videoIds waiting to be downloaded
 const fypActive = new Set()   // videoIds currently downloading
 let lastFypCursor = 0
 const fypSeen = new Set()     // ids we've already queued/downloaded this session
 
-function getFypLimit() {
+function getSmartDlLimit() {
   const n = parseInt(settingsCache.smartDlLimit, 10)
   return Number.isFinite(n) && n > 0 ? n : 0
 }
@@ -4403,29 +5216,6 @@ function getFypLimit() {
 function getFypConcurrency() {
   const n = parseInt(settingsCache.smartDlConcurrency, 10)
   return Number.isFinite(n) && n > 0 ? Math.min(5, n) : 1
-}
-
-// Total smart downloads started so far (persisted across sessions).
-function getSmartDlCount() {
-  const n = parseInt(settingsCache.smartDlCount, 10)
-  return Number.isFinite(n) && n > 0 ? n : 0
-}
-
-// True if the total smart-download cap has been reached.
-function smartDlLimitReached() {
-  const limit = getFypLimit()
-  return limit > 0 && getSmartDlCount() >= limit
-}
-
-// Reserve one slot against the persistent total cap. Only one reservation may
-// be made per video id; returns true if the download is allowed to proceed.
-function reserveSmartDlSlot(videoId) {
-  if (smartDlLimitReached()) return false
-  if (processedUrls.has(videoId)) return false
-  processedUrls.set(videoId, { via: 'smart', detectedAt: Date.now() })
-  saveSettings({ smartDlCount: getSmartDlCount() + 1 })
-  console.log(`[SmartDL] Reserved slot (total ${getSmartDlCount()}) for: ${videoId}`)
-  return true
 }
 
 function pumpFypQueue() {
@@ -4478,9 +5268,14 @@ function getFypRefreshMs() {
   return (Number.isFinite(min) && min > 0 ? min : 60) * 60 * 1000
 }
 
-function startFypDownloader() {
+function startFypDownloader({ delayMs = 0 } = {}) {
   if (fypDlTimer) return
-  checkFypRecommendations() // kick off immediately
+  // The first scan fetches the feed again and can spawn yt-dlp. On launch that
+  // stacks on top of the window's own feed load, so wait unless the user just
+  // turned the feature on.
+  const kick = () => { if (smartDlEnabled) checkFypRecommendations() }
+  if (delayMs > 0) setTimeout(kick, delayMs)
+  else kick()
   fypDlTimer = setInterval(checkFypRecommendations, getFypRefreshMs())
   console.log(`[SmartDL] For You recommendation downloader started (${getFypRefreshMs() / 60000}min refresh interval)`)
 }
@@ -4504,7 +5299,14 @@ function getSmartDlStatus() {
       })
     }
   })
-  return { enabled: smartDlEnabled, clipboard: smartDlClipboard, active }
+  return {
+    enabled: smartDlEnabled,
+    clipboard: smartDlClipboard,
+    active,
+    count: smartDlCountFor('fyp'),
+    clipboardCount: smartDlCountFor('clipboard'),
+    limit: getSmartDlLimit(),
+  }
 }
 
 function getSmartDlHistory() {
@@ -4687,9 +5489,42 @@ function setupIPC() {
   ipcMain.handle('get-app-path', () => CONFIG_DIR)
   ipcMain.handle('get-downloads-path', () => DOWNLOADS_DIR)
 
+  // The three folders the renderer shows in Settings: the base downloads dir and
+  // the music/videos subfolders.
+  ipcMain.handle('get-download-paths', () => ({ base: DOWNLOADS_DIR, music: MUSIC_DIR, videos: VIDEOS_DIR }))
+
+  // Connectivity probe for the offline screen's "Retry" action. Uses the raw
+  // fetch (not the reporting wrapper) so a failed probe can't re-trigger itself.
+  ipcMain.handle('net-probe', async () => {
+    try {
+      if (net && typeof net.isOnline === 'function' && !net.isOnline()) {
+        return { ok: false, online: false, reason: 'offline' }
+      }
+    } catch { /* ignore */ }
+    const endpoints = ['https://www.youtube.com/generate_204', 'https://www.google.com/generate_204']
+    for (const url of endpoints) {
+      try {
+        const r = await (nodeFetch || fetch)(url, { method: 'GET', headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(4000) })
+        if (r) return { ok: true, online: true, status: r.status }
+      } catch { /* try the next endpoint */ }
+    }
+    return { ok: false, online: false, reason: 'unreachable' }
+  })
+
   ipcMain.handle('get-downloads-list', async () => {
-    try { return fs.readdirSync(DOWNLOADS_DIR).map(f => ({ name: f, path: path.join(DOWNLOADS_DIR, f), size: fs.statSync(path.join(DOWNLOADS_DIR, f)).size, modified: fs.statSync(DOWNLOADS_DIR, f).mtime })) }
-    catch { return [] }
+    const out = []
+    for (const dir of [...MEDIA_DIRS, DOWNLOADS_DIR]) {
+      try {
+        for (const f of fs.readdirSync(dir)) {
+          const p = path.join(dir, f)
+          let st
+          try { st = fs.statSync(p) } catch { continue }
+          if (!st.isFile()) continue
+          out.push({ name: f, path: p, size: st.size, modified: st.mtime })
+        }
+      } catch { /* folder may not exist */ }
+    }
+    return out
   })
 
   ipcMain.handle('select-directory', async () => {
@@ -4798,7 +5633,7 @@ function setupIPC() {
     const res = await loadSignedSubscriptions()
     if (res.ok) {
       const merged = syncGoogleSubscriptions(res.subscriptions)
-      return { ok: true, reason: null, subscriptions: merged, count: merged.length, synced: res.subscriptions.length, cached: !!res.cached }
+      return { ok: true, reason: null, subscriptions: merged, channelAvatars: prefs.channelAvatars || {}, count: merged.length, synced: res.subscriptions.length, cached: !!res.cached }
     }
     return { ok: false, reason: res.reason, subscriptions: prefs.subscriptions }
   })
@@ -4811,6 +5646,19 @@ function setupIPC() {
   ipcMain.handle('yt-channel', async (_e, channelName) => {
     console.log('[IPC] yt-channel:', channelName)
     return getChannelInfo(channelName)
+  })
+
+  ipcMain.handle('yt-channel-avatar', async (_e, channelName) => {
+    const key = (channelName || '').trim().toLowerCase()
+    if (!key) return ''
+    if (prefs.channelAvatars && prefs.channelAvatars[key]) return prefs.channelAvatars[key]
+    const hit = await resolveChannel(channelName)
+    if (hit?.avatar) {
+      rememberChannelAvatar(channelName, hit.avatar)
+      savePrefs()
+      return prefs.channelAvatars[key] || hit.avatar
+    }
+    return ''
   })
 
   ipcMain.handle('yt-channel-more', async (_e, token, channelName) => {
@@ -4898,7 +5746,13 @@ function setupIPC() {
   ipcMain.handle('yt-music-lyrics', async (_e, args) => {
     const a = typeof args === 'string' ? { videoId: args } : (args || {})
     console.log('[IPC] yt-music-lyrics:', a.videoId, a.title || '', a.duration || '')
-    try { return await getMusicLyrics(a) } catch (e) { console.error('[Music] lyrics', e.message); return { ok: false, reason: e.message } }
+    try {
+      // Downloaded track: its bundled lyrics are the most accurate (and work
+      // offline), so prefer them over a fresh network lookup.
+      const local = a.filePath ? readLocalLyrics(a.filePath) : null
+      if (local && (local.synced?.length || local.lyrics)) return local
+      return await getMusicLyrics(a)
+    } catch (e) { console.error('[Music] lyrics', e.message); return { ok: false, reason: e.message } }
   })
 
   // Audio-only stream URL for the music player (no ffmpeg relay).
@@ -4915,31 +5769,27 @@ function setupIPC() {
   // Settings
   ipcMain.handle('settings-get', () => loadSettings())
   ipcMain.handle('settings-set', (_e, patch) => {
+    // Capture the previous values *before* saveSettings overwrites the cache,
+    // otherwise the change detection below can never fire.
     const oldInterval = settingsCache.smartDlInterval
     const oldEnabled = settingsCache.smartDlEnabled
+    const oldClipboard = settingsCache.smartDlClipboard
     const result = saveSettings(patch)
-    // Restart FYP downloader if interval changed and smart download is enabled
+    // Restart the For You downloader if its interval changed and it is running
     if (patch.smartDlInterval !== undefined && patch.smartDlInterval !== oldInterval && smartDlEnabled) {
       stopFypDownloader()
       startFypDownloader()
     }
-    // Start/stop FYP downloader when master toggle changes
+    // Smart Downloads (For You feed) master — independent of the clipboard source
     if (patch.smartDlEnabled !== undefined && patch.smartDlEnabled !== oldEnabled) {
-      if (patch.smartDlEnabled) {
-        smartDlEnabled = true
-        startFypDownloader()
-      } else {
-        smartDlEnabled = false
-        stopFypDownloader()
-        stopClipboardWatcher()
-      }
+      smartDlEnabled = !!patch.smartDlEnabled
+      if (smartDlEnabled) startFypDownloader()
+      else stopFypDownloader()
     }
-    // Toggle clipboard watcher when clipboard setting changes
-    if (patch.smartDlClipboard !== undefined && patch.smartDlClipboard !== settingsCache.smartDlClipboard) {
-      if (smartDlEnabled) {
-        if (patch.smartDlClipboard) startClipboardWatcher()
-        else stopClipboardWatcher()
-      }
+    // Clipboard source — independent of the For You feed master
+    if (patch.smartDlClipboard !== undefined && patch.smartDlClipboard !== oldClipboard) {
+      if (patch.smartDlClipboard) startClipboardWatcher()
+      else stopClipboardWatcher()
     }
     return result
   })
@@ -4948,9 +5798,36 @@ function setupIPC() {
   ipcMain.handle('prepare-playback', (_e, filePath) => prepareLocalPlayback(filePath))
 
   // Download pipeline IPC
-  ipcMain.handle('dl-start', async (_e, { videoId, quality, format, title, thumbnail, audio }) => {
+  ipcMain.handle('dl-start', async (_e, { videoId, quality, format, title, thumbnail, audio, artist, duration, withLyrics }) => {
     console.log('[IPC] dl-start:', videoId, quality, format, 'audio=', !!audio)
-    return startDownload(videoId, quality, format, title, thumbnail, audio)
+    return startDownload(videoId, quality, format, title, thumbnail, audio, { artist, duration, withLyrics })
+  })
+
+  ipcMain.handle('dl-playlist', async (_e, { playlist, tracks, concurrency } = {}) => {
+    console.log('[IPC] dl-playlist:', Array.isArray(tracks) ? tracks.length : 0, 'tracks', playlist?.title || '')
+    return downloadPlaylist({ playlist, tracks, concurrency })
+  })
+
+  ipcMain.handle('dl-playlists', () => getDownloadedPlaylists())
+
+  // Turn auto-download of newly added songs on/off for one saved playlist.
+  ipcMain.handle('dl-playlist-autosync', (_e, { id, enabled } = {}) => {
+    if (!id) return false
+    console.log('[IPC] dl-playlist-autosync:', id, enabled)
+    return patchPlaylist(id, { autoSync: !!enabled })
+  })
+
+  // Check one playlist for new songs right now (works even when auto-sync is off).
+  ipcMain.handle('dl-playlist-sync', async (_e, id) => {
+    console.log('[IPC] dl-playlist-sync:', id)
+    try { return await syncPlaylist(id, { force: true }) }
+    catch (e) { return { ok: false, error: e.message } }
+  })
+
+  ipcMain.handle('dl-sync-all', async () => {
+    console.log('[IPC] dl-sync-all')
+    try { return await syncAllPlaylists() }
+    catch (e) { return { ok: false, error: e.message } }
   })
 
   ipcMain.handle('dl-cancel', (_e, downloadId) => {
@@ -4977,7 +5854,12 @@ function setupIPC() {
     return false
   })
 
-  // Smart Download IPC
+  // Smart Download IPC — two independent sources:
+  //   smart-dl-toggle          → For You feed recommendations
+  //   smart-dl-clipboard-toggle → YouTube links copied to the clipboard
+  // Each is persisted and can run with the other off.
+
+  // For You feed source.
   ipcMain.handle('smart-dl-toggle', async (_e, enabled) => {
     console.log('[IPC] smart-dl-toggle:', enabled)
     if (enabled) {
@@ -4992,31 +5874,40 @@ function setupIPC() {
       }
     }
     smartDlEnabled = !!enabled
-    if (smartDlEnabled) {
-      startFypDownloader()              // For You recommendations are the default source
-      if (smartDlClipboard) startClipboardWatcher()
-    } else {
-      stopFypDownloader()
-      stopClipboardWatcher()
-    }
+    saveSettings({ smartDlEnabled })
+    if (smartDlEnabled) startFypDownloader()
+    else stopFypDownloader()
     return { enabled: smartDlEnabled, clipboard: smartDlClipboard }
   })
 
-  // Toggle the clipboard source (OFF by default; FYP feed is the default source).
+  // Clipboard source (independent of the For You feed).
   ipcMain.handle('smart-dl-clipboard-toggle', async (_e, enabled) => {
     const val = enabled !== undefined ? !!enabled : !smartDlClipboard
-    if (val && !smartDlEnabled) {
-      // Clipboard is an extra source; still require the master switch to be on.
-      return { enabled: smartDlEnabled, clipboard: false }
+    if (val) {
+      const available = await checkYtdlpBinary()
+      if (!available) {
+        sendToRenderer('toast', {
+          type: 'error',
+          message: 'yt-dlp is not installed. Install it with: sudo pip install yt-dlp',
+          duration: 8000,
+        })
+        return { enabled: smartDlEnabled, clipboard: false, ytdlpMissing: true }
+      }
     }
     smartDlClipboard = val
     saveSettings({ smartDlClipboard })
-    if (smartDlEnabled) {
-      if (smartDlClipboard) startClipboardWatcher()
-      else stopClipboardWatcher()
-    }
+    if (smartDlClipboard) startClipboardWatcher()
+    else stopClipboardWatcher()
     console.log('[IPC] smart-dl-clipboard-toggle:', smartDlClipboard)
     return { enabled: smartDlEnabled, clipboard: smartDlClipboard }
+  })
+
+  // Reset the per-source smart-download counters (and let any URL be retried).
+  ipcMain.handle('smart-dl-reset-counts', () => {
+    saveSettings({ smartDlCount: 0, smartDlClipboardCount: 0 })
+    processedUrls.clear()
+    console.log('[IPC] smart-dl-reset-counts')
+    return { count: 0, clipboardCount: 0, limit: getSmartDlLimit() }
   })
 
   ipcMain.handle('smart-dl-status', () => getSmartDlStatus())
@@ -5032,20 +5923,41 @@ function setupIPC() {
 
 app.whenReady().then(async () => {
   ensureDirectories()
+  migrateDownloadsLayout()
+  repairPlaylistPaths()
   loadSettings()
+  smartDlEnabled = !!settingsCache.smartDlEnabled
   smartDlClipboard = !!settingsCache.smartDlClipboard
   loadPrefs()
   loadAuth()
+  // auth.bin can lose its cookie header (e.g. a failed decrypt or a profile
+  // move) while the cached account survives. Everything signed-in that reads
+  // auth.cookies then silently goes anonymous — most visibly the music library,
+  // which reports "signed out" and shows no playlists. The Chromium profile
+  // still holds the live YouTube session, so re-harvest the cookies from it and
+  // repair the backup before any renderer asks for auth state.
+  try {
+    if (await captureCookiesFromSession()) {
+      console.log('[Auth] re-harvested session cookies at startup')
+      persistAuth()
+    }
+  } catch (e) { console.error('[Auth] startup cookie harvest error:', e.message) }
   setupSession()
   setupFileProtocol()
   setupIPC()
   try { await startStaticServer() } catch (e) { console.error('[App] static server failed', e.message) }
   createWindow()
+  startPlaylistSyncScheduler()
   const ytdlpOk = await checkYtdlpBinary()
   if (ytdlpOk) {
     const ver = await checkYtdlpVersion()
     console.log(`[App] yt-dlp found: ${ver || 'unknown version'}`)
-    startYtdlpUpdateCheck()
+    // yt-dlp -U is a Python process. Running it during the first paint competes
+    // with the window, so let the app settle first.
+    setTimeout(() => startYtdlpUpdateCheck(), 45000)
+    // Restore the smart-download sources that were left on (each independent).
+    if (smartDlEnabled) startFypDownloader({ delayMs: 30000 })
+    if (smartDlClipboard) startClipboardWatcher()
   } else {
     console.warn('[App] yt-dlp not found - smart downloads will be unavailable')
     sendToRenderer('toast', {
@@ -5059,6 +5971,7 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => { stopClipboardWatcher(); if (process.platform !== 'darwin') app.quit() })
 app.on('before-quit', () => {
   stopClipboardWatcher()
+  if (playlistSyncTimer) clearInterval(playlistSyncTimer)
   destroyMusicAuthedWindow()
   streamProcesses.forEach((entry) => { if (entry.ffmpeg && !entry.ffmpeg.killed) entry.ffmpeg.kill('SIGKILL') })
   smartDownloads.forEach((dl) => { if (dl.process && !dl.process.killed) dl.process.kill('SIGTERM') })

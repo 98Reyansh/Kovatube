@@ -39,44 +39,27 @@ function VideoCard({ video }) {
     if (video.channel) navigate(`/channel/${encodeURIComponent(video.channel)}`)
   }
   return (
-    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col hover-lift rounded-xl">
-      <div className="relative">
-        <div className="absolute -inset-1 rounded-2xl bg-yt-red/50 blur-2xl opacity-0 group-hover:opacity-60 transition-opacity duration-300 pointer-events-none" />
-        <div className="relative aspect-video bg-gray-200 dark:bg-gray-800 rounded-xl overflow-hidden shadow-sm group-hover:shadow-lg transition-shadow">
+    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col">
+      <div className="relative aspect-video bg-neutral-200 dark:bg-neutral-900 rounded-md overflow-hidden">
           {video.thumbnail ? (
-            <img src={video.thumbnail} alt={video.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" loading="lazy" />
+            <img src={video.thumbnail} alt={video.title} className="w-full h-full object-cover" loading="lazy" />
           ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gray-100 dark:bg-gray-800">
-              <svg className="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="w-full h-full flex items-center justify-center">
+              <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
               </svg>
             </div>
           )}
           {video.duration && (
-            <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-white text-xs font-medium px-1.5 py-0.5 rounded">{video.duration}</span>
+            <span className="absolute bottom-1.5 right-1.5 bg-black/75 text-white text-[11px] px-1 py-0.5 rounded">{video.duration}</span>
           )}
-          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-            <span className="w-12 h-12 bg-yt-red/90 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-              <svg className="w-6 h-6 translate-x-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-            </span>
-          </div>
-        </div>
       </div>
-      <div className="flex gap-3 mt-3">
-        <button
-          onClick={openChannel}
-          className="w-9 h-9 rounded-full bg-gradient-to-br from-yt-red to-pink-500 flex items-center justify-center text-white text-sm font-medium shrink-0 hover-ring"
-          title={`View ${video.channel || 'channel'} channel`}
-          aria-label={`View channel`}
-        >
-          {(video.channel || '?').charAt(0).toUpperCase()}
-        </button>
-        <div className="min-w-0 flex-1">
-          <h3 className="font-medium text-[15px] leading-snug line-clamp-2 group-hover:text-yt-red dark:group-hover:text-yt-red-light transition-colors">{video.title}</h3>
+      <div className="mt-2.5 min-w-0">
+          <h3 className="font-medium text-[14px] leading-snug line-clamp-2">{video.title}</h3>
           <div className="flex flex-wrap items-center justify-between gap-1 mt-1">
             <button
               onClick={openChannel}
-              className="text-sm text-gray-600 dark:text-gray-400 truncate hover:text-yt-red transition-colors"
+              className="text-[13px] text-gray-500 dark:text-gray-400 truncate hover:text-gray-800 dark:hover:text-gray-200"
               title={`View ${video.channel || 'channel'} channel`}
             >{video.channel}</button>
             <VideoMenu video={video} />
@@ -84,7 +67,6 @@ function VideoCard({ video }) {
           <p className="text-sm text-gray-500 dark:text-gray-500 mt-0.5">
             {video.views}{video.publishedTime ? ` · ${video.publishedTime}` : ''}
           </p>
-        </div>
       </div>
     </Link>
   )
@@ -124,10 +106,20 @@ export default function FypFeed() {
 
   useEffect(() => {
     const el = sentinelRef.current
+    const root = document.querySelector('main')
     if (!el) return
-    const obs = new IntersectionObserver(handleIntersect, { rootMargin: '200px' })
+    const obs = new IntersectionObserver(handleIntersect, { root: root || null, rootMargin: '800px' })
     obs.observe(el)
-    return () => obs.disconnect()
+    const onScroll = () => {
+      if (!root) return
+      if (root.scrollHeight - root.scrollTop - root.clientHeight < 900) handleIntersect([{ isIntersecting: true }])
+    }
+    root?.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+    return () => {
+      obs.disconnect()
+      root?.removeEventListener('scroll', onScroll)
+    }
   }, [handleIntersect])
 
   const isEmpty = !loading && !loadingMore && feed.length === 0 && loaded
@@ -139,21 +131,14 @@ export default function FypFeed() {
     <div className="space-y-6">
       {showOverlay && <FullScreenLoader />}
 
-      <div className="flex items-center justify-between animate-fade-in-up">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">For You</h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {signed
-              ? 'Your personalized YouTube feed'
-              : 'Recommendations based on your watch history and subscriptions'}
-          </p>
-        </div>
+      <div className="flex items-baseline justify-between">
+        <h1 className="text-lg font-medium tracking-tight">For You</h1>
         {subscriptions.length > 0 && (
           <Link
             to="/subscriptions"
-            className="px-3 py-1.5 rounded-full text-sm font-medium bg-black/[0.05] dark:bg-white/[0.08] hover:bg-black/[0.09] dark:hover:bg-white/[0.14] transition-colors hover-ring"
+            className="text-[13px] text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white"
           >
-            Manage Subscriptions ({subscriptions.length})
+            Subscriptions
           </Link>
         )}
       </div>
@@ -162,7 +147,7 @@ export default function FypFeed() {
         <EmptyState title="Couldn't load your feed" message={error}>
           <button
             onClick={() => loadFyp({ force: true, background: true })}
-            className="px-4 py-2 rounded-full bg-yt-red hover:bg-yt-red-hover text-white text-sm font-medium transition-all"
+            className="text-sm text-gray-900 dark:text-white underline underline-offset-4"
           >
             Retry
           </button>
@@ -174,16 +159,16 @@ export default function FypFeed() {
         >
           <button
             onClick={() => loadFyp({ force: true })}
-            className="px-4 py-2 rounded-full bg-yt-red hover:bg-yt-red-hover text-white text-sm font-medium transition-all"
+            className="text-sm text-gray-900 dark:text-white underline underline-offset-4"
           >
             Refresh Feed
           </button>
         </EmptyState>
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
+          <div className="reveal-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8">
             {feed.map((video, i) => (
-              <div key={video.id} className="stagger-item hover-lift">
+              <div key={video.id}>
                 <VideoCard video={video} />
               </div>
             ))}

@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { HashRouter as Router, Routes, Route, useLocation } from 'react-router-dom'
 import HeaderBar from './components/HeaderBar'
+import Sidebar from './components/Sidebar'
+import WelcomeWizard, { WelcomeReplayProvider, hasSeenWelcome } from './components/WelcomeWizard'
 import Home from './components/Home'
 import VideoDetail from './components/VideoDetail'
 import Downloads from './components/Downloads'
@@ -10,19 +12,24 @@ import Subscriptions from './components/Subscriptions'
 import Channel from './components/Channel'
 import NewVideos from './components/NewVideos'
 import SavedVideos from './components/SavedVideos'
+import WatchLater from './components/WatchLater'
 import Music from './components/music/Music'
 import MusicBrowse from './components/music/MusicBrowse'
+import MusicDownloads from './components/music/MusicDownloads'
 import IntroLoader from './components/IntroLoader'
-import { SettingsProvider } from './context/SettingsContext'
+import { SettingsProvider, useSettings } from './context/SettingsContext'
 import { SearchProvider, useSearch } from './context/SearchContext'
 import { SubscriptionsProvider, useSubscriptions } from './context/SubscriptionsContext'
 import { DownloadProvider } from './context/DownloadContext'
 import { SmartDownloadProvider } from './context/SmartDownloadContext'
 import { SavedProvider } from './context/SavedContext'
+import { WatchLaterProvider } from './context/WatchLaterContext'
 import { ToastProvider } from './context/ToastContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { QueueProvider, useQueue } from './context/QueueContext'
+import { NetworkProvider, useNetwork } from './context/NetworkContext'
 import MiniPlayer from './components/MiniPlayer'
+import OfflineGate from './components/OfflineGate'
 
 // A thin accent progress line pinned to the very top of the window (above the
 // header) so any loading state reads as full-screen activity, never a gap.
@@ -56,19 +63,23 @@ function TopProgressBar() {
 function AnimatedRoutes() {
   const location = useLocation()
   const { current: queueCurrent } = useQueue()
+  const { refreshToken } = useNetwork()
+  const fill = location.pathname === '/shorts'
   return (
-    <main className={`flex-1 overflow-auto transition-[padding] duration-300 ${queueCurrent ? 'pb-20' : 'pb-0'}`}>
-      <div key={location.pathname} className="h-full">
-        <div className="p-4 page-enter">
+    <main className={`min-h-0 flex-1 transition-[padding] duration-300 ${fill ? 'overflow-hidden' : 'overflow-auto'} ${queueCurrent ? 'pb-20' : 'pb-0'}`}>
+      <div key={location.pathname + ':' + refreshToken} className={fill ? 'h-full' : undefined}>
+        <div className="px-8 py-7 page-enter">
           <Routes location={location}>
             <Route path="/" element={<Home />} />
             <Route path="/video/:id" element={<VideoDetail />} />
             <Route path="/channel/:name" element={<Channel />} />
             <Route path="/downloads" element={<Downloads />} />
+            <Route path="/downloads/music" element={<MusicDownloads />} />
             <Route path="/shorts" element={<ShortsFeed />} />
             <Route path="/subscriptions" element={<Subscriptions />} />
             <Route path="/new" element={<NewVideos />} />
             <Route path="/saved" element={<SavedVideos />} />
+            <Route path="/watch-later" element={<WatchLater />} />
             <Route path="/music" element={<Music />} />
             <Route path="/music/browse/:browseId" element={<MusicBrowse />} />
             <Route path="/settings" element={<Settings />} />
@@ -81,8 +92,20 @@ function AnimatedRoutes() {
 
 function Layout() {
   const { checking } = useAuth()
+  const { settings, hydrated, updateSetting } = useSettings()
   const { isFirstLoad } = useSubscriptions()
   const [showIntro, setShowIntro] = useState(true)
+  const [welcomeOpen, setWelcomeOpen] = useState(false)
+  const welcomeDecided = useRef(false)
+  const topNav = settings.navPosition === 'top'
+
+  useEffect(() => {
+    if (!hydrated || welcomeDecided.current) return
+    welcomeDecided.current = true
+    const seen = settings.welcomed === true || hasSeenWelcome()
+    if (seen && settings.welcomed !== true) updateSetting('welcomed', true)
+    setWelcomeOpen(!seen)
+  }, [hydrated, settings.welcomed, updateSetting])
 
   useEffect(() => {
     if (!checking && !isFirstLoad) {
@@ -91,18 +114,27 @@ function Layout() {
   }, [checking, isFirstLoad])
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-yt-dark">
+    <WelcomeReplayProvider openWelcome={() => setWelcomeOpen(true)}>
+    <div className={`flex h-screen min-h-0 bg-white dark:bg-yt-dark ${topNav ? 'flex-col' : ''}`}>
       <TopProgressBar />
-      <HeaderBar />
-      {showIntro && <IntroLoader />}
-      <AnimatedRoutes />
-      <MiniPlayer />
+      {!topNav && <Sidebar />}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {topNav && <Sidebar />}
+        <HeaderBar />
+        {showIntro && !welcomeOpen && <IntroLoader />}
+        <AnimatedRoutes />
+        <OfflineGate />
+        <MiniPlayer />
+      </div>
+      {welcomeOpen && <WelcomeWizard onDone={() => setWelcomeOpen(false)} />}
     </div>
+    </WelcomeReplayProvider>
   )
 }
 
 function App() {
   return (
+    <NetworkProvider>
     <SettingsProvider>
       <AuthProvider>
       <SearchProvider>
@@ -110,6 +142,7 @@ function App() {
         <ToastProvider>
         <DownloadProvider>
           <SavedProvider>
+          <WatchLaterProvider>
           <SmartDownloadProvider>
             <QueueProvider>
               <Router>
@@ -117,6 +150,7 @@ function App() {
               </Router>
             </QueueProvider>
           </SmartDownloadProvider>
+          </WatchLaterProvider>
           </SavedProvider>
         </DownloadProvider>
         </ToastProvider>
@@ -124,6 +158,7 @@ function App() {
       </SearchProvider>
       </AuthProvider>
     </SettingsProvider>
+    </NetworkProvider>
   )
 }
 

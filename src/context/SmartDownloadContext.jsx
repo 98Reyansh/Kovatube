@@ -11,6 +11,7 @@ export function useSmartDownloads() {
 export function SmartDownloadProvider({ children }) {
   const [enabled, setEnabled] = useState(false)
   const [clipboard, setClipboard] = useState(false)
+  const [counts, setCounts] = useState({ fyp: 0, clipboard: 0, limit: 0 })
   const [activeDownloads, setActiveDownloads] = useState([])
   const [history, setHistory] = useState([])
   const [hasHydrated, setHasHydrated] = useState(false)
@@ -20,6 +21,7 @@ export function SmartDownloadProvider({ children }) {
     window.electronAPI.smartDlStatus().then(status => {
       setEnabled(status.enabled)
       if (typeof status.clipboard === 'boolean') setClipboard(status.clipboard)
+      setCounts({ fyp: status.count || 0, clipboard: status.clipboardCount || 0, limit: status.limit || 0 })
       setActiveDownloads(status.active)
       setHasHydrated(true)
     }).catch(() => setHasHydrated(true))
@@ -120,10 +122,34 @@ export function SmartDownloadProvider({ children }) {
     setHistory(h)
   }, [])
 
+  const refreshStatus = useCallback(async () => {
+    if (!window.electronAPI) return
+    try {
+      const status = await window.electronAPI.smartDlStatus()
+      setEnabled(status.enabled)
+      if (typeof status.clipboard === 'boolean') setClipboard(status.clipboard)
+      setCounts({ fyp: status.count || 0, clipboard: status.clipboardCount || 0, limit: status.limit || 0 })
+      setActiveDownloads(status.active)
+    } catch {}
+  }, [])
+
+  const resetCounts = useCallback(async () => {
+    if (!window.electronAPI) return null
+    try {
+      const res = await window.electronAPI.smartDlResetCounts()
+      setCounts(c => ({ ...c, fyp: 0, clipboard: 0 }))
+      return res
+    } catch (e) {
+      console.error('[SmartDownloadContext] reset failed:', e)
+      return null
+    }
+  }, [])
+
   return (
     <SmartDownloadContext.Provider value={{
-      enabled, clipboard, activeDownloads, history, hasHydrated,
-      toggleSmartDownload, toggleClipboard, cancelSmartDownload, refreshHistory,
+      enabled, clipboard, counts, activeDownloads, history, hasHydrated,
+      toggleSmartDownload, toggleClipboard, cancelSmartDownload,
+      refreshHistory, refreshStatus, resetCounts,
     }}>
       {children}
     </SmartDownloadContext.Provider>

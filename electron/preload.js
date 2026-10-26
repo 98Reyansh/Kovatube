@@ -3,9 +3,15 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('electronAPI', {
   getAppPath: () => ipcRenderer.invoke('get-app-path'),
   getDownloadsPath: () => ipcRenderer.invoke('get-downloads-path'),
+  getDownloadPaths: () => ipcRenderer.invoke('get-download-paths'),
   getDownloadsList: () => ipcRenderer.invoke('get-downloads-list'),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   saveFile: (data) => ipcRenderer.invoke('save-file', data),
+
+  // Connectivity (offline screen)
+  netProbe: () => ipcRenderer.invoke('net-probe'),
+  onNetworkError: (cb) => { ipcRenderer.on('network-error', () => cb()) },
+  removeNetworkErrorListeners: () => { ipcRenderer.removeAllListeners('network-error') },
 
   ytSearch: (query) => ipcRenderer.invoke('yt-search', query),
   ytHomeFeed: () => ipcRenderer.invoke('yt-home-feed'),
@@ -17,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ytUnsubscribe: (channel) => ipcRenderer.invoke('yt-unsubscribe', channel),
   ytVideoInfo: (videoId) => ipcRenderer.invoke('yt-video-info', videoId),
   ytChannel: (channelName) => ipcRenderer.invoke('yt-channel', channelName),
+  ytChannelAvatar: (channelName) => ipcRenderer.invoke('yt-channel-avatar', channelName),
   ytChannelMore: (token, channelName) => ipcRenderer.invoke('yt-channel-more', token, channelName),
   ytNewVideos: () => ipcRenderer.invoke('yt-new-videos'),
   ytConvertFormats: (videoUrl) => ipcRenderer.invoke('yt-convert-formats', videoUrl),
@@ -57,19 +64,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Download pipeline
   dlStart: (opts) => ipcRenderer.invoke('dl-start', opts),
+  dlPlaylist: (opts) => ipcRenderer.invoke('dl-playlist', opts),
   dlCancel: (downloadId) => ipcRenderer.invoke('dl-cancel', downloadId),
   dlActive: () => ipcRenderer.invoke('dl-active'),
   dlCompleted: () => ipcRenderer.invoke('dl-completed'),
+  dlPlaylists: () => ipcRenderer.invoke('dl-playlists'),
+  dlPlaylistAutoSync: (id, enabled) => ipcRenderer.invoke('dl-playlist-autosync', { id, enabled }),
+  dlPlaylistSync: (id) => ipcRenderer.invoke('dl-playlist-sync', id),
+  dlSyncAll: () => ipcRenderer.invoke('dl-sync-all'),
   dlPlay: (filePath) => ipcRenderer.invoke('dl-play', filePath),
   dlShowInFolder: (filePath) => ipcRenderer.invoke('dl-show-in-folder', filePath),
   onDownloadProgress: (cb) => { ipcRenderer.on('download-progress', (_e, data) => cb(data)) },
   onDownloadComplete: (cb) => { ipcRenderer.on('download-complete', (_e, data) => cb(data)) },
+  onPlaylistUpdate: (cb) => { ipcRenderer.on('playlist-update', (_e, data) => cb(data)) },
+  onPlaylistSync: (cb) => { ipcRenderer.on('playlist-sync', (_e, data) => cb(data)) },
   removeDownloadListeners: () => { ipcRenderer.removeAllListeners('download-progress'); ipcRenderer.removeAllListeners('download-complete') },
+  removePlaylistUpdateListeners: () => { ipcRenderer.removeAllListeners('playlist-update') },
+  removePlaylistSyncListeners: () => { ipcRenderer.removeAllListeners('playlist-sync') },
 
   // Smart Download pipeline
   smartDlToggle: (enabled) => ipcRenderer.invoke('smart-dl-toggle', enabled),
   smartDlClipboardToggle: (enabled) => ipcRenderer.invoke('smart-dl-clipboard-toggle', enabled),
   smartDlStatus: () => ipcRenderer.invoke('smart-dl-status'),
+  smartDlResetCounts: () => ipcRenderer.invoke('smart-dl-reset-counts'),
   smartDlHistory: () => ipcRenderer.invoke('smart-dl-history'),
   smartDlCancel: (dlId) => ipcRenderer.invoke('smart-dl-cancel', dlId),
   onSmartDlProgress: (cb) => { ipcRenderer.on('smart-dl-progress', (_e, data) => cb(data)) },

@@ -1,13 +1,45 @@
-import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import Hls from 'hls.js'
 import { useDownloads } from '../context/DownloadContext'
 import { useSettings } from '../context/SettingsContext'
 import { useSubscriptions } from '../context/SubscriptionsContext'
+import { useWatchLater } from '../context/WatchLaterContext'
+import { useToast } from '../context/ToastContext'
+import { pushMediaFocus } from '../mediaFocus'
 import VideoMenu from './VideoMenu'
 import LocalPlayer from './LocalPlayer'
+import { prewarmOnHover } from '../lib/prewarm'
 
-function NativePlayer({ id, autoPlay }) {
+// "m:ss" or "h:mm:ss" from the video page. 0 when the length isn't known yet.
+function clockToSeconds(text) {
+  if (!text || typeof text !== 'string') return 0
+  const parts = text.trim().split(':').map(Number)
+  if (!parts.length || parts.some((n) => !Number.isFinite(n))) return 0
+  return parts.reduce((total, n) => total * 60 + n, 0)
+}
+
+function seekableEnd(video) {
+  try {
+    if (video.seekable && video.seekable.length) {
+      return video.seekable.end(video.seekable.length - 1)
+    }
+  } catch { /* seekable can throw while the media is resetting */ }
+  const d = video.duration
+  return isFinite(d) && d > 0 ? d : 0
+}
+
+// The HLS relay writes the playlist as it muxes, so the media element reports a
+// length that grows during playback. Prefer the known full length until the
+// stream has actually caught up to it.
+function fullDuration(known, media) {
+  const knownSec = isFinite(known) && known > 0 ? known : 0
+  const mediaSec = isFinite(media) && media > 0 ? media : 0
+  if (knownSec > mediaSec + 1.5) return knownSec
+  return mediaSec || knownSec
+}
+
+function NativePlayer({ id, autoPlay, knownDuration = 0 }) {
   const [streamUrl, setStreamUrl] = useState(null)
   const [streamError, setStreamError] = useState(null)
   const [loadingStream, setLoadingStream] = useState(true)
@@ -18,9 +50,12 @@ function NativePlayer({ id, autoPlay }) {
   const hlsRef = useRef(null)
   const containerRef = useRef(null)
   const seekToRef = useRef(null)
+  const knownRef = useRef(0)
+  knownRef.current = knownDuration > 0 ? knownDuration : 0
   const [playing, setPlaying] = useState(autoPlay)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [seekable, setSeekable] = useState(0)
   const [volume, setVolume] = useState(1)
   const [speed, setSpeed] = useState(1)
   const [muted, setMuted] = useState(false)
@@ -71,6 +106,7 @@ function NativePlayer({ id, autoPlay }) {
     setPhase('resolving')
     setCurrentTime(0)
     setDuration(0)
+    setSeekable(0)
     timingRef.current = { t0: Date.now(), manifest: false, firstFrame: false }
 
     stopCurrent()
@@ -104,6 +140,9 @@ function NativePlayer({ id, autoPlay }) {
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
+        // The playlist has no end tag until ffmpeg finishes, so hls.js would
+        // otherwise treat it as live and start at the growing edge.
+        startPosition: 0,
         manifestLoadingMaxRetry: 6,
         manifestLoadingRetryDelay: 300,
         manifestLoadingTimeOut: 20000,
@@ -146,9 +185,14 @@ function NativePlayer({ id, autoPlay }) {
   }, [streamUrl, autoPlay])
 
   const fmt = (s) => {
-    if (!isFinite(s)) return '0:00'
-    const m = Math.floor(s / 60); const sec = Math.floor(s % 60)
-    return `${m}:${sec.toString().padStart(2, '0')}`
+    if (!isFinite(s) || s < 0) return '0:00'
+    const total = Math.floor(s)
+    const h = Math.floor(total / 3600)
+    const m = Math.floor((total % 3600) / 60)
+    const sec = total % 60
+    const mm = h > 0 ? String(m).padStart(2, '0') : String(m)
+    const clock = `${mm}:${String(sec).padStart(2, '0')}`
+    return h > 0 ? `${h}:${clock}` : clock
   }
 
   const togglePlay = () => {
@@ -167,10 +211,13 @@ function NativePlayer({ id, autoPlay }) {
 
   const onSeek = (e) => {
     const video = videoRef.current
-    if (!video || !duration) return
+    const total = fullDuration(knownRef.current, video ? video.duration : duration)
+    if (!video || !total) return
     const rect = e.currentTarget.getBoundingClientRect()
     const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
-    const t = frac * duration
+    let t = frac * total
+    const end = seekableEnd(video)
+    if (end > 0) t = Math.min(t, end)
     if (seeking === false) setSeeking(true)
     setCurrentTime(t)
     video.currentTime = t
@@ -207,6 +254,9 @@ function NativePlayer({ id, autoPlay }) {
   // Official YouTube keyboard shortcuts (Space, k, j, l, m, f, arrows, etc.)
   useEffect(() => {
     if (!streamUrl || loadingStream) return
+    // Claim the keyboard while a video is loaded so the music player's
+    // always-on shortcuts stand down on this page.
+    const releaseFocus = pushMediaFocus('video')
     const onKey = (e) => {
       const t = e.target
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
@@ -225,19 +275,33 @@ function NativePlayer({ id, autoPlay }) {
       if (e.key === 'ArrowUp') { e.preventDefault(); adjustVolume(0.05); return }
       if (e.key === 'ArrowDown') { e.preventDefault(); adjustVolume(-0.05); return }
       if (e.key === 'Home') { e.preventDefault(); if (video) video.currentTime = 0; return }
-      if (e.key === 'End') { e.preventDefault(); if (video && isFinite(video.duration)) video.currentTime = video.duration; return }
+      if (e.key === 'End') {
+        e.preventDefault()
+        const end = seekableEnd(video)
+        if (end > 0) video.currentTime = end
+        return
+      }
       if (e.key === '+' || e.key === '=') { adjustVolume(0.05); return }
       if (e.key === '-' || e.key === '_') { adjustVolume(-0.05); return }
       if (e.key === '>' || e.key === '.') { adjustSpeed(0.25); return }
       if (e.key === '<' || e.key === ',') { adjustSpeed(-0.25); return }
       if (/^[0-9]$/.test(e.key)) {
         const pct = parseInt(e.key, 10) / 10
-        if (video && isFinite(video.duration)) video.currentTime = pct * video.duration
+        const total = fullDuration(knownRef.current, video.duration)
+        if (total > 0) {
+          let t = pct * total
+          const end = seekableEnd(video)
+          if (end > 0) t = Math.min(t, end)
+          video.currentTime = t
+        }
         return
       }
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      releaseFocus()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamUrl, loadingStream])
 
@@ -288,6 +352,10 @@ function NativePlayer({ id, autoPlay }) {
     </div>
   )
 
+  const totalDuration = fullDuration(knownDuration, duration)
+  const playedPct = totalDuration ? Math.min(100, (currentTime / totalDuration) * 100) : 0
+  const bufferedPct = totalDuration ? Math.min(100, (Math.max(seekable, isFinite(duration) ? duration : 0) / totalDuration) * 100) : 0
+
   return (
     <div
       ref={containerRef}
@@ -314,10 +382,27 @@ function NativePlayer({ id, autoPlay }) {
           }
         }}
         onPause={() => setPlaying(false)}
-        onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-        onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration || 0); if (seekToRef.current) { try { e.currentTarget.currentTime = seekToRef.current } catch (_) {} seekToRef.current = null } }}
+        onTimeUpdate={(e) => {
+          const v = e.currentTarget
+          setCurrentTime(v.currentTime)
+          const end = seekableEnd(v)
+          if (end > 0) setSeekable(end)
+        }}
+        onLoadedMetadata={(e) => {
+          const d = e.currentTarget.duration
+          if (isFinite(d) && d > 0) setDuration(d)
+          const end = seekableEnd(e.currentTarget)
+          if (end > 0) setSeekable(end)
+          if (seekToRef.current) { try { e.currentTarget.currentTime = seekToRef.current } catch (_) {} seekToRef.current = null }
+        }}
         onDurationChange={(e) => { const d = e.currentTarget.duration; if (isFinite(d) && d > 0) setDuration(d) }}
-        onProgress={(e) => { const d = e.currentTarget.duration; if (isFinite(d) && d > 0 && e.currentTarget.buffered.length) setDuration(d) }}
+        onProgress={(e) => {
+          const v = e.currentTarget
+          const d = v.duration
+          if (isFinite(d) && d > 0 && v.buffered.length) setDuration(d)
+          const end = seekableEnd(v)
+          if (end > 0) setSeekable(end)
+        }}
         onEnded={() => { setPlaying(false); setShowControls(true) }}
         onVolumeChange={(e) => { setVolume(e.currentTarget.volume); setMuted(e.currentTarget.muted) }}
       />
@@ -403,8 +488,9 @@ function NativePlayer({ id, autoPlay }) {
                 onClick={onSeek}
                 onMouseMove={(e) => { if (e.buttons === 1) onSeek(e) }}
               >
-                <div className="absolute inset-y-0 left-0 rounded-full bg-yt-red" style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }} />
-                <div className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-yt-red opacity-0 group-hover/seek:opacity-100 transition" style={{ left: `calc(${duration ? (currentTime / duration) * 100 : 0}% - 7px)` }} />
+                <div className="absolute inset-y-0 left-0 rounded-full bg-white/40" style={{ width: `${bufferedPct}%` }} />
+                <div className="absolute inset-y-0 left-0 rounded-full bg-yt-red" style={{ width: `${playedPct}%` }} />
+                <div className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-yt-red opacity-0 group-hover/seek:opacity-100 transition" style={{ left: `calc(${playedPct}% - 7px)` }} />
               </div>
               <div className="flex items-center gap-2">
                 <button className={menuBtn} onClick={togglePlay}>
@@ -417,7 +503,7 @@ function NativePlayer({ id, autoPlay }) {
                     ? <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M16.5 12a4.5 4.5 0 00-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.796 8.796 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 003.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" /></svg>
                     : <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05A4.5 4.5 0 0016.5 12zM14 3.23v2.06a7 7 0 010 13.42v2.06c5.12-.51 9-4.8 9-9.77s-3.88-9.26-9-9.77z" /></svg>}
                 </button>
-                <span className="text-[13px] text-white/85 font-medium tabular-nums">{fmt(currentTime)} / {fmt(duration)}</span>
+                <span className="text-[13px] text-white/85 font-medium tabular-nums">{fmt(currentTime)} / {fmt(totalDuration)}</span>
                 <div className="flex-1" />
                 <span className="text-[13px] text-white/85 font-medium capitalize tabular-nums">{quality === 'auto' ? 'Auto' : `${quality}p`} · {speed}x</span>
               </div>
@@ -527,12 +613,119 @@ function FormatButton({ format, onDownload, isDownloading }) {
 
 const EMBED_URL = (id) => `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&modestbranding=1&playsinline=1&enablejsapi=1`
 
+function DescriptionBox({ text }) {
+  const [open, setOpen] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  const clampRef = useRef(null)
+  const fullRef = useRef(null)
+
+  useEffect(() => { setOpen(false) }, [text])
+
+  useLayoutEffect(() => {
+    const full = fullRef.current
+    if (!full) return
+    const line = parseFloat(getComputedStyle(full).lineHeight) || 22
+    setOverflows(full.scrollHeight > line * 2 + 2)
+  }, [text])
+
+  return (
+    <div className="mt-4 rounded-2xl border border-black/[0.06] dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.04] px-4 py-3">
+      <div className="relative">
+        <p
+          ref={clampRef}
+          className={`text-sm leading-relaxed text-gray-600 dark:text-gray-300 ${open ? 'whitespace-pre-line' : 'line-clamp-2'}`}
+        >
+          {text}
+        </p>
+        <p
+          ref={fullRef}
+          aria-hidden
+          className="pointer-events-none invisible absolute inset-x-0 top-0 text-sm leading-relaxed whitespace-pre-line"
+        >
+          {text}
+        </p>
+      </div>
+      {overflows && (
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="mt-2 text-sm font-medium text-gray-900 dark:text-white"
+        >
+          {open ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function DownloadProgress({ items, onCancel }) {
+  if (!items.length) return null
+  return (
+    <div className="space-y-2 rounded-xl border border-yt-red/20 bg-yt-red/5 px-3 py-3">
+      <p className="text-sm font-medium flex items-center gap-2">
+        <svg className="w-4 h-4 animate-spin text-yt-red" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        Downloading
+      </p>
+      {items.map((dl) => (
+        <div key={dl.id} className="space-y-1">
+          <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
+            <span>{dl.quality}</span>
+            <span>{Math.round(dl.progress || 0)}%</span>
+          </div>
+          <div className="h-1.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+            <div className="h-full bg-yt-red" style={{ width: `${Math.min(100, dl.progress || 0)}%` }} />
+          </div>
+          <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
+            <span>{dl.eta}</span>
+            <button type="button" onClick={() => onCancel(dl.id)} className="text-red-500 hover:text-red-400">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function RecommendedRow({ video }) {
+  return (
+    <Link
+      to={`/video/${video.id}`}
+      onMouseEnter={() => prewarmOnHover(video.id)}
+      className="flex gap-3 rounded-xl p-1.5 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+    >
+      <div className="relative w-[148px] shrink-0 aspect-video overflow-hidden rounded-lg bg-neutral-200 dark:bg-neutral-900">
+        {video.thumbnail ? (
+          <img src={video.thumbnail} alt="" className="h-full w-full object-cover" loading="lazy" />
+        ) : (
+          <div className="h-full w-full" />
+        )}
+        {video.duration && (
+          <span className="absolute bottom-1 right-1 rounded bg-black/80 px-1 py-0.5 text-[11px] text-white">{video.duration}</span>
+        )}
+      </div>
+      <div className="min-w-0 py-0.5">
+        <p className="text-sm font-medium leading-snug line-clamp-2">{video.title}</p>
+        <p className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">{video.channel}</p>
+        <p className="truncate text-xs text-gray-500 dark:text-gray-500">
+          {[video.views, video.publishedTime].filter(Boolean).join(' · ')}
+        </p>
+      </div>
+    </Link>
+  )
+}
+
 export default function VideoDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { startDownload, activeDownloads, completedDownloads, playFile, cancelDownload } = useDownloads()
   const { settings } = useSettings()
   const { recordWatch } = useSubscriptions()
+  const { isInWatchLater, toggleWatchLater } = useWatchLater()
+  const { addToast } = useToast()
   const [videoInfo, setVideoInfo] = useState(null)
   const [formats, setFormats] = useState([])
   const [loadingInfo, setLoadingInfo] = useState(true)
@@ -540,6 +733,9 @@ export default function VideoDetail() {
   const [infoError, setInfoError] = useState(null)
   const [formatError, setFormatError] = useState(null)
   const [playingLocal, setPlayingLocal] = useState(null)
+  const [downloadOpen, setDownloadOpen] = useState(false)
+  const [related, setRelated] = useState([])
+  const [loadingRelated, setLoadingRelated] = useState(false)
   const iframeRef = useRef(null)
 
   // Music takes over the speakers: ask the embed (iframe playback mode) to pause.
@@ -568,6 +764,8 @@ export default function VideoDetail() {
       setVideoInfo(null)
       setFormats([])
       setPlayingLocal(null)
+      setDownloadOpen(false)
+      setRelated([])
 
       // Info and formats only need the video id — fetch both at once instead of
       // waiting for the info round-trip before starting the formats call.
@@ -619,6 +817,22 @@ export default function VideoDetail() {
 
     return () => { cancelled = true }
   }, [id])
+
+  useEffect(() => {
+    const query = (videoInfo?.title || videoInfo?.channel || '').trim()
+    if (!query || !window.electronAPI?.ytSearch) return
+    let cancelled = false
+    setLoadingRelated(true)
+    window.electronAPI.ytSearch(query)
+      .then((result) => {
+        if (cancelled) return
+        const videos = (result?.videos || []).filter((video) => video.id && video.id !== id).slice(0, 12)
+        setRelated(videos)
+      })
+      .catch(() => { if (!cancelled) setRelated([]) })
+      .finally(() => { if (!cancelled) setLoadingRelated(false) })
+    return () => { cancelled = true }
+  }, [videoInfo, id])
 
   // Record watch for recommendations once video info loads
   useEffect(() => {
@@ -677,9 +891,12 @@ export default function VideoDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localFile && localFile.filePath])
 
+  const videoFormats = formats.filter((format) => format.type !== 'audio')
+  const audioFormats = formats.filter((format) => format.type === 'audio')
+
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="flex flex-col lg:flex-row gap-6">
+    <div className="max-w-7xl mx-auto">
+      <div className="flex flex-col lg:flex-row gap-8">
         <div className="flex-1 min-w-0">
           {loadingInfo ? (
             <SkeletonPlayer />
@@ -689,7 +906,7 @@ export default function VideoDetail() {
                 {playingLocal ? (
                   <LocalPlayer url={playingLocal} title={videoInfo?.title || 'Local preview'} onClose={closeLocalPlayer} />
                 ) : settings.playbackMode === 'inApp' ? (
-                  <NativePlayer id={id} autoPlay={settings.autoplay} />
+                  <NativePlayer id={id} autoPlay={settings.autoplay} knownDuration={clockToSeconds(videoInfo?.duration)} />
                 ) : (
                   <iframe
                     key={id}
@@ -728,119 +945,165 @@ export default function VideoDetail() {
                 </div>
               )}
 
-              <h1 className="text-xl md:text-2xl font-semibold leading-snug mt-4">{videoInfo?.title || 'Video'}</h1>
-              {videoInfo && (
-                <div className="flex flex-wrap items-center gap-4 mt-3">
-                  <span className="text-gray-600 dark:text-gray-400 text-sm">
-                    {videoInfo.views}{videoInfo.duration ? ` views · ${videoInfo.duration}` : ''}
-                  </span>
-                  {videoInfo.channel && (
-                    <div className="flex items-center gap-3">
+              <h1 className="text-xl md:text-2xl font-semibold leading-snug tracking-tight mt-4">{videoInfo?.title || 'Video'}</h1>
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  {videoInfo?.channel && (
+                    <button
+                      onClick={() => navigate(`/channel/${encodeURIComponent(videoInfo.channel)}`)}
+                      className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black/[0.06] text-sm text-gray-700 dark:bg-white/10 dark:text-gray-200"
+                      title={`View ${videoInfo.channel}`}
+                      aria-label={`View ${videoInfo.channel}`}
+                    >
+                      {videoInfo.channel.charAt(0).toUpperCase()}
+                    </button>
+                  )}
+                  <div className="min-w-0">
+                    {videoInfo?.channel && (
                       <button
                         onClick={() => navigate(`/channel/${encodeURIComponent(videoInfo.channel)}`)}
-                        className="w-10 h-10 bg-gradient-to-br from-yt-red to-pink-500 rounded-full flex items-center justify-center text-lg font-medium text-white hover-ring"
-                        title={`View ${videoInfo.channel} channel`}
-                        aria-label="View channel"
+                        className="block truncate text-sm font-medium hover:text-yt-red"
                       >
-                        {videoInfo.channel.charAt(0).toUpperCase()}
+                        {videoInfo.channel}
                       </button>
-                      <button
-                        onClick={() => navigate(`/channel/${encodeURIComponent(videoInfo.channel)}`)}
-                        className="font-medium hover:text-yt-red transition-colors"
-                      >{videoInfo.channel}</button>
-                      <VideoMenu video={{ id, title: videoInfo?.title || '', thumbnail: videoInfo?.thumbnail || '', channel: videoInfo.channel, duration: videoInfo.duration || '' }} />
+                    )}
+                    {videoInfo && (
+                      <p className="truncate text-xs text-gray-500 dark:text-gray-400">
+                        {[
+                          videoInfo.views
+                            ? (/views?$/i.test(String(videoInfo.views)) ? videoInfo.views : `${videoInfo.views} views`)
+                            : '',
+                          videoInfo.duration,
+                        ].filter(Boolean).join(' · ')}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {videoInfo && (
+                    <button
+                      onClick={() => {
+                        const queued = isInWatchLater(id)
+                        toggleWatchLater({
+                          id,
+                          title: videoInfo.title || '',
+                          thumbnail: videoInfo.thumbnail || '',
+                          channel: videoInfo.channel || '',
+                          duration: videoInfo.duration || '',
+                        })
+                        addToast('success', queued ? 'Removed from Watch later' : 'Added to Watch later', 2500)
+                      }}
+                      className={`rounded-full border px-3.5 py-1.5 text-[13px] font-medium transition-colors ${
+                        isInWatchLater(id)
+                          ? 'border-current text-gray-900 dark:text-white'
+                          : 'border-black/10 dark:border-white/15 text-gray-600 dark:text-gray-300 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+                      }`}
+                    >
+                      {isInWatchLater(id) ? 'In Watch later' : 'Watch later'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    aria-expanded={downloadOpen}
+                    onClick={() => setDownloadOpen((open) => !open)}
+                    className={`inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-[13px] font-medium text-white ${
+                      downloadOpen ? 'bg-yt-red-hover' : 'bg-yt-red hover:bg-yt-red-hover'
+                    }`}
+                  >
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    {activeForVideo.length ? 'Downloading' : 'Download'}
+                  </button>
+                  {videoInfo?.channel && (
+                    <VideoMenu video={{ id, title: videoInfo?.title || '', thumbnail: videoInfo?.thumbnail || '', channel: videoInfo.channel, duration: videoInfo.duration || '' }} />
+                  )}
+                </div>
+              </div>
+
+              {settings.showDescriptions && videoInfo?.description && (
+                <DescriptionBox text={videoInfo.description} />
+              )}
+
+              {downloadOpen && (
+                <div className="mt-3 rounded-2xl border border-black/[0.06] dark:border-white/10 bg-black/[0.03] dark:bg-white/[0.04] p-3 space-y-3">
+                  <DownloadProgress items={activeForVideo} onCancel={cancelDownload} />
+                  {loadingFormats ? (
+                    <SkeletonFormats />
+                  ) : formatError && formats.length === 0 ? (
+                    <div className="rounded-xl bg-black/[0.03] dark:bg-black/20 px-4 py-5 text-center">
+                      <p className="text-sm text-gray-500">Could not load format info</p>
+                      <p className="mt-1 text-xs text-gray-400">{formatError}</p>
+                      <a
+                        href={`https://app.ytdown.to/en38/?url=https://www.youtube.com/watch?v=${id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 inline-block rounded-full bg-yt-red px-4 py-2 text-sm font-medium text-white hover:bg-yt-red-hover"
+                      >
+                        Try on YTDown
+                      </a>
                     </div>
+                  ) : formats.length === 0 ? (
+                    <p className="px-1 py-3 text-sm text-gray-500">No download formats for this video.</p>
+                  ) : (
+                    <>
+                      {videoFormats.length > 0 && (
+                        <div className="space-y-2">
+                          <p className="px-1 text-xs font-medium text-gray-500 dark:text-gray-400">Video</p>
+                          {videoFormats.map((format, i) => (
+                            <FormatButton key={`v-${i}`} format={format} onDownload={handleDownload} isDownloading={isDownloading(format)} />
+                          ))}
+                        </div>
+                      )}
+                      {audioFormats.length > 0 && (
+                        <div className="space-y-2">
+                          <p className="px-1 text-xs font-medium text-gray-500 dark:text-gray-400">Audio</p>
+                          {audioFormats.map((format, i) => (
+                            <FormatButton key={`a-${i}`} format={format} onDownload={handleDownload} isDownloading={isDownloading(format)} />
+                          ))}
+                        </div>
+                      )}
+                      <p className="text-center text-xs text-gray-400 dark:text-gray-500">
+                        Videos save to ~/.config/Kovatube/downloads/videos
+                      </p>
+                    </>
                   )}
                 </div>
               )}
-              {settings.showDescriptions && videoInfo?.description && (
-                <div className="mt-4 p-4 bg-gray-100 dark:bg-gray-800/80 rounded-xl border border-black/5 dark:border-white/5">
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed">{videoInfo.description}</p>
+
+              {!downloadOpen && activeForVideo.length > 0 && (
+                <div className="mt-3">
+                  <DownloadProgress items={activeForVideo} onCancel={cancelDownload} />
                 </div>
               )}
             </div>
           )}
         </div>
 
-        <div className="lg:w-80 shrink-0">
-          <div className="sticky top-4 space-y-4">
-            <div className="flex items-center gap-2.5">
-              <span className="w-1 h-5 bg-yt-red rounded-full" />
-              <h3 className="font-semibold text-lg">Download Options</h3>
-            </div>
-
-            {activeForVideo.length > 0 && (
-              <div className="space-y-2 p-3 bg-yt-red/5 dark:bg-yt-red/10 border border-yt-red/20 rounded-xl">
-                <p className="text-sm font-medium flex items-center gap-2">
-                  <svg className="w-4 h-4 animate-spin text-yt-red" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                  </svg>
-                  Downloading
-                </p>
-                {activeForVideo.map(dl => (
-                  <div key={dl.id} className="space-y-1">
-                    <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
-                      <span>{dl.quality}</span>
-                      <span>{Math.round(dl.progress || 0)}%</span>
-                    </div>
-                    <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-yt-red transition-all"
-                        style={{ width: `${Math.min(100, dl.progress || 0)}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
-                      <span>{dl.eta}</span>
-                      <button
-                        onClick={() => cancelDownload(dl.id)}
-                        className="text-red-500 hover:text-red-700 transition-colors"
-                      >
-                        Cancel
-                      </button>
+        <div className="lg:w-[22.5rem] shrink-0">
+          <div className="lg:sticky lg:top-4">
+            <h2 className="mb-2 px-1.5 text-sm font-medium">Recommended</h2>
+            {loadingRelated ? (
+              <div className="space-y-3">
+                {[1, 2, 3, 4].map((item) => (
+                  <div key={item} className="flex gap-3 p-1.5">
+                    <div className="aspect-video w-[148px] shrink-0 rounded-lg skeleton" />
+                    <div className="flex-1 space-y-2 py-1">
+                      <div className="h-3.5 skeleton rounded w-full" />
+                      <div className="h-3.5 skeleton rounded w-2/3" />
+                      <div className="h-3 skeleton rounded w-1/2" />
                     </div>
                   </div>
                 ))}
               </div>
-            )}
-
-            {loadingFormats ? (
-              <SkeletonFormats />
-            ) : formatError && formats.length === 0 ? (
-              <div className="p-4 bg-gray-100 dark:bg-gray-800 rounded-xl text-center">
-                <svg className="w-10 h-10 mx-auto text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                </svg>
-                <p className="text-sm text-gray-500 mb-2">Could not load format info</p>
-                <p className="text-xs text-gray-400 mb-3">{formatError}</p>
-                <a
-                  href={`https://app.ytdown.to/en38/?url=https://www.youtube.com/watch?v=${id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-block px-4 py-2 bg-yt-red text-white text-sm font-medium rounded-lg hover:bg-yt-red-hover transition-colors hover-ring"
-                >
-                  Try on YTDown
-                </a>
-              </div>
+            ) : related.length === 0 ? (
+              <p className="px-1.5 text-sm text-gray-500 dark:text-gray-400">No recommendations for this video yet.</p>
             ) : (
-              <>
-                <div className="space-y-2">
-                  {formats.filter(f => f.type !== 'audio').map((format, i) => (
-                    <FormatButton key={`v-${i}`} format={format} onDownload={handleDownload} isDownloading={isDownloading(format)} />
-                  ))}
-                </div>
-                <div className="pt-2">
-                  <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Audio</p>
-                  <div className="space-y-2">
-                    {formats.filter(f => f.type === 'audio').map((format, i) => (
-                      <FormatButton key={`a-${i}`} format={format} onDownload={handleDownload} isDownloading={isDownloading(format)} />
-                    ))}
-                  </div>
-                </div>
-                <p className="text-xs text-gray-400 dark:text-gray-500 text-center pt-2">
-                  Downloads are saved to ~/.config/Kovatube/downloads
-                </p>
-              </>
+              <div className="space-y-1">
+                {related.map((video) => (
+                  <RecommendedRow key={video.id} video={video} />
+                ))}
+              </div>
             )}
           </div>
         </div>
