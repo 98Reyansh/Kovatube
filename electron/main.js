@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage, net } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage, net, Notification } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -7,11 +7,16 @@ const http = require('http')
 const crypto = require('crypto')
 const { spawn, execFile } = require('child_process')
 
-app.disableHardwareAcceleration()
-app.commandLine.appendSwitch('disable-gpu')
+// This Fedora machine crashes if Chromium starts a GPU process. Mac and
+// Windows keep hardware acceleration.
+if (process.platform === 'linux') {
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu')
+}
 
-// Keep the Chromium profile (~/.config/kovatube) separate from the app's own
-// data dir (~/.config/Kovatube), and stable between dev and packaged builds.
+// Keep the Chromium profile separate from the app's own data dir, and stable
+// between dev and packaged builds. Linux: ~/.config/kovatube. macOS:
+// ~/Library/Application Support/kovatube. Windows: %APPDATA%\kovatube.
 app.setPath('userData', path.join(app.getPath('appData'), 'kovatube'))
 
 protocol.registerSchemesAsPrivileged([
@@ -25,7 +30,45 @@ process.on('unhandledRejection', (reason) => {
   console.error('[App] Unhandled rejection:', reason && reason.message ? reason.message : reason)
 })
 
-const CONFIG_DIR = path.join(os.homedir(), '.config', 'Kovatube')
+// Existing Linux installs already store settings and downloads in
+// ~/.config/Kovatube. New installs, and Mac/Windows, use the per-user app folder.
+function resolveConfigDir() {
+  const legacy = path.join(os.homedir(), '.config', 'Kovatube')
+  if (process.platform === 'linux' && fs.existsSync(legacy)) return legacy
+  return app.getPath('userData')
+}
+const CONFIG_DIR = resolveConfigDir()
+
+function toolFileName(name) {
+  if (process.platform !== 'win32') return name
+  return name.toLowerCase().endsWith('.exe') ? name : `${name}.exe`
+}
+
+function bundledToolDirs() {
+  const dirs = []
+  if (process.resourcesPath) dirs.push(path.join(process.resourcesPath, 'bin'))
+  try { dirs.push(path.join(path.dirname(process.execPath), 'bin')) } catch { /* no exec path yet */ }
+  dirs.push(path.join(__dirname, '..', 'bin'))
+  return dirs
+}
+
+// Prefer a binary shipped beside the app, then whatever is on PATH.
+function resolveTool(name) {
+  const file = toolFileName(name)
+  for (const dir of bundledToolDirs()) {
+    const candidate = path.join(dir, file)
+    try { if (fs.existsSync(candidate)) return candidate } catch { /* keep looking */ }
+  }
+  return file
+}
+
+function spawnTool(name, args, opts) {
+  return spawn(resolveTool(name), args, opts)
+}
+
+function execTool(name, args, cb) {
+  return execFile(resolveTool(name), args, cb)
+}
 const DOWNLOADS_DIR = path.join(CONFIG_DIR, 'downloads')
 // Music (audio) and video downloads live in their own subfolders so the two
 // kinds never mix in one pile.
@@ -3708,7 +3751,7 @@ function startYtDlpResolve(videoId, quality, preferEnglish = true) {
   let proc = null
   let exited = false
   const promise = new Promise((resolve) => {
-    proc = spawn('yt-dlp', [
+    proc = spawnTool('yt-dlp', [
       '--js-runtimes', 'node',
       '-g', '-f', format, '--no-playlist', '--skip-download',
       '--no-colors', videoUrl,
@@ -3820,7 +3863,7 @@ function startHlsRelay(videoId, videoUrl, audioUrl, cb) {
     '-start_number', '0',
     m3u8,
   ]
-  const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8' } })
+  const proc = spawnTool('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8' } })
   let errLog = ''
   proc.stderr.on('data', (c) => { errLog += c.toString() })
   proc.on('error', (e) => { console.error('[stream] ffmpeg spawn error:', e.message); stopStream(videoId); cb({ ok: false, reason: e.message }) })
@@ -4323,7 +4366,7 @@ function startManualYtDlp(dlId) {
 
   let proc
   try {
-    proc = spawn('yt-dlp', args, {
+    proc = spawnTool('yt-dlp', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
     })
@@ -4833,21 +4876,16 @@ let ytdlpAvailable = null
 
 function checkYtdlpBinary() {
   return new Promise((resolve) => {
-    execFile('which', ['yt-dlp'], (err, stdout) => {
-      if (err || !stdout.trim()) {
-        ytdlpAvailable = false
-        resolve(false)
-      } else {
-        ytdlpAvailable = true
-        resolve(true)
-      }
+    execTool('yt-dlp', ['--version'], (err) => {
+      ytdlpAvailable = !err
+      resolve(ytdlpAvailable)
     })
   })
 }
 
 function checkYtdlpVersion() {
   return new Promise((resolve) => {
-    execFile('yt-dlp', ['--version'], (err, stdout) => {
+    execTool('yt-dlp', ['--version'], (err, stdout) => {
       if (err) { resolve(null); return }
       resolve(stdout.trim())
     })
@@ -4856,7 +4894,7 @@ function checkYtdlpVersion() {
 
 function startYtdlpUpdateCheck() {
   console.log('[SmartDL] Checking for yt-dlp updates...')
-  const proc = spawn('yt-dlp', ['-U'], {
+  const proc = spawnTool('yt-dlp', ['-U'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
   })
@@ -4888,11 +4926,13 @@ function extractYouTubeId(text) {
 
 function fireNotify(summary, body) {
   try {
-    execFile('notify-send', ['-a', 'Kovatube', '-u', 'normal', summary, body || ''], (err) => {
-      if (err) console.error('[SmartDL] notify-send failed:', err.message)
-    })
+    if (Notification.isSupported()) {
+      const note = new Notification({ title: summary, body: body || '' })
+      note.show()
+      return
+    }
   } catch (e) {
-    console.error('[SmartDL] notify-send error:', e.message)
+    console.error('[SmartDL] notification error:', e.message)
   }
 }
 
@@ -4944,7 +4984,7 @@ function startSmartDownload(videoId, url, onDone, source = 'fyp') {
 
   console.log(`[SmartDL] Starting download: ${videoUrl}`)
 
-  const proc = spawn('yt-dlp', args, {
+  const proc = spawnTool('yt-dlp', args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
   })

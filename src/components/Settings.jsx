@@ -49,9 +49,14 @@ export default function Settings() {
   // Real on-disk download folders (songs and videos are kept apart), shown in
   // the Downloads section below.
   const [dlPaths, setDlPaths] = useState(null)
+  const [configDir, setConfigDir] = useState('')
   useEffect(() => {
     if (!window.electronAPI?.getDownloadPaths) return
     window.electronAPI.getDownloadPaths().then(setDlPaths).catch(() => {})
+  }, [])
+  useEffect(() => {
+    if (!window.electronAPI?.getAppPath) return
+    window.electronAPI.getAppPath().then((dir) => { if (dir) setConfigDir(dir) }).catch(() => {})
   }, [])
 
   // Keep the per-source usage in the limit row accurate while this page is open.
@@ -308,7 +313,7 @@ export default function Settings() {
               description={
                 dlPaths
                   ? `Music and videos are kept apart. Videos: ${dlPaths.videos} · Music: ${dlPaths.music}`
-                  : 'Music and videos are kept in separate folders inside ~/.config/Kovatube/downloads'
+                  : 'Music and videos are kept in separate folders inside the app data directory'
               }
               icon={
                 <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -436,7 +441,7 @@ export default function Settings() {
           </section>
 
           <p className="text-xs text-gray-400 dark:text-gray-500 text-center">
-            Settings are saved automatically to ~/.config/Kovatube/settings.json
+            Settings are saved automatically{configDir ? ` to ${configDir.replace(/[\\/]$/, '')}${configDir.includes('\\') ? '\\' : '/'}settings.json` : ''}
           </p>
         </>
       )}
