@@ -1,6 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQueue } from '../context/QueueContext'
+import { useSettings } from '../context/SettingsContext'
 import { pushMediaFocus, currentMediaFocus } from '../mediaFocus'
+
+const LYRIC_MOTIONS = [
+  { id: 'karaoke', label: 'Karaoke' },
+  { id: 'rise', label: 'Rise' },
+  { id: 'glow', label: 'Glow' },
+  { id: 'bounce', label: 'Bounce' },
+  { id: 'fade', label: 'Fade' },
+]
 
 function fmt(t) {
   if (!t || !isFinite(t)) return '0:00'
@@ -57,7 +66,7 @@ const WORD_LEAD = 0.02
 // only when the active line or the number of sung words actually changes.
 // `offset` (seconds) shifts the lyrics later (+) or earlier (−) to line them up
 // with a recording whose intro differs from the lyric source.
-function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, ambient = false, onSeek }) {
+function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, ambient = false, onSeek, animation = 'karaoke' }) {
   const boxRef = useRef(null)
   const activeRef = useRef(null)
   const nowRef = useRef(null)
@@ -135,9 +144,12 @@ function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, a
     box.scrollTo({ top: el.offsetTop - box.clientHeight / 2 + el.clientHeight / 2, behavior: 'smooth' })
   }, [activeIdx])
 
+  const motionCls = animation === 'still'
+    ? 'lrc-anim-still'
+    : `lrc-anim-${LYRIC_MOTIONS.some((item) => item.id === animation) ? animation : 'karaoke'}`
   const boxCls = ambient
-    ? 'lrc-ambient w-full h-full overflow-y-auto px-1 sm:px-2 py-4 text-left'
-    : 'w-full h-56 rounded-2xl bg-black/[0.03] dark:bg-white/[0.05] border border-black/5 dark:border-white/10 overflow-y-auto px-4 py-3 text-left'
+    ? `lrc-ambient ${motionCls} w-full h-full overflow-y-auto px-1 sm:px-2 py-4 text-left`
+    : `${motionCls} w-full h-56 rounded-2xl bg-black/[0.03] dark:bg-white/[0.05] border border-black/5 dark:border-white/10 overflow-y-auto px-4 py-3 text-left`
   const lineCls = ambient
     ? 'py-2 text-xl sm:text-2xl lg:text-3xl leading-snug'
     : 'py-1 text-sm leading-relaxed'
@@ -205,6 +217,29 @@ function LyricsView({ synced, plain, footer, currentTime, getTime, offset = 0, a
 // Nudge control for when the lyric source runs a little ahead of or behind the
 // recording (different master/intro). Persisted by the parent. Uses functional
 // updates so quick successive clicks accumulate correctly.
+function LyricMotion({ value, onChange, disabled, ambient }) {
+  const txt = ambient ? 'text-white/60' : 'text-gray-400 dark:text-gray-500'
+  const field = ambient
+    ? 'bg-white/10 text-white/80'
+    : 'bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-gray-300'
+  return (
+    <label className={`inline-flex items-center gap-2 text-[11px] ${txt} ${disabled ? 'opacity-50' : ''}`}>
+      <span className="uppercase tracking-wider opacity-80">Motion</span>
+      <select
+        aria-label="Lyrics animation"
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className={`rounded-full px-2.5 py-1 text-[11px] outline-none ${field}`}
+      >
+        {LYRIC_MOTIONS.map((item) => (
+          <option key={item.id} value={item.id}>{item.label}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 function SyncControl({ offset, onChange, ambient }) {
   const clamp = (v) => Math.max(-3, Math.min(3, Math.round(v * 100) / 100))
   const btn = ambient
@@ -243,6 +278,7 @@ function FullPlayer({
   toggle, next, prev, seek, setVolume, setShuffle, cycleRepeat,
   view, setView, onClose, onAmbient,
   showLyrics, hasSynced, getTime, lyricOffset, setLyricOffset,
+  lyricMotion, setLyricMotion, motionOff,
 }) {
   const pct = duration ? (currentTime / duration) * 100 : 0
   const tabCls = (on) => `px-3.5 py-1 rounded-full text-xs font-medium transition-colors ${on ? 'bg-white text-gray-900 shadow-sm' : 'text-white/70 hover:text-white hover:bg-white/10'}`
@@ -324,6 +360,7 @@ function FullPlayer({
                 getTime={getTime}
                 offset={lyricOffset}
                 onSeek={seek}
+                animation={motionOff ? 'still' : lyricMotion}
               />
             ) : (
               <div className="h-full flex flex-col items-center justify-center text-center gap-2 text-white/50">
@@ -343,8 +380,9 @@ function FullPlayer({
       </div>
 
       {view === 'lyrics' && hasSynced && (
-        <div className="relative z-10 pb-1">
+        <div className="relative z-10 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pb-1">
           <SyncControl offset={lyricOffset} onChange={setLyricOffset} ambient />
+          <LyricMotion value={lyricMotion} onChange={setLyricMotion} disabled={motionOff} ambient />
         </div>
       )}
 
@@ -417,6 +455,11 @@ function FullPlayer({
 }
 
 export default function MiniPlayer() {
+  const { settings, updateSetting } = useSettings()
+  const lyricMotion = LYRIC_MOTIONS.some((item) => item.id === settings.lyricAnimation) ? settings.lyricAnimation : 'karaoke'
+  const motionOff = !!settings.reduceMotion
+  const playedMotion = motionOff ? 'still' : lyricMotion
+  const setLyricMotion = (value) => updateSetting('lyricAnimation', value)
   const {
     current, source, playing, loading,
     currentTime, duration, volume, shuffle, repeat,
@@ -620,6 +663,7 @@ export default function MiniPlayer() {
                   getTime={getAudioTime}
                   offset={lyricOffset}
                   onSeek={seek}
+                  animation={playedMotion}
                 />
               ) : (
                 <div className="h-full flex flex-col items-center justify-center text-center gap-2 text-white/50">
@@ -633,8 +677,9 @@ export default function MiniPlayer() {
           </div>
 
           {hasSynced && (
-            <div className="relative z-10 pb-1">
+            <div className="relative z-10 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pb-1">
               <SyncControl offset={lyricOffset} onChange={setLyricOffset} ambient />
+              <LyricMotion value={lyricMotion} onChange={setLyricMotion} disabled={motionOff} ambient />
             </div>
           )}
 
@@ -712,6 +757,9 @@ export default function MiniPlayer() {
           getTime={getAudioTime}
           lyricOffset={lyricOffset}
           setLyricOffset={setLyricOffset}
+          lyricMotion={lyricMotion}
+          setLyricMotion={setLyricMotion}
+          motionOff={motionOff}
         />
       )}
 
@@ -748,6 +796,7 @@ export default function MiniPlayer() {
                 getTime={getAudioTime}
                 offset={lyricOffset}
                 onSeek={seek}
+                animation={playedMotion}
               />
             ) : (
               <div className="w-full h-56 rounded-2xl bg-black/[0.03] dark:bg-white/[0.05] border border-black/5 dark:border-white/10 flex flex-col items-center justify-center text-center gap-1">
@@ -758,7 +807,10 @@ export default function MiniPlayer() {
               </div>
             )}
             {view === 'lyrics' && hasSynced && (
-              <SyncControl offset={lyricOffset} onChange={setLyricOffset} />
+              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+                <SyncControl offset={lyricOffset} onChange={setLyricOffset} />
+                <LyricMotion value={lyricMotion} onChange={setLyricMotion} disabled={motionOff} />
+              </div>
             )}
             <div className="text-center w-full">
               <p className="font-semibold text-lg truncate">{current.title}</p>

@@ -3952,6 +3952,7 @@ const DEFAULT_SETTINGS = {
   fypSource: 'auto',       // 'auto' (personalized when signed in) | 'signedIn' | 'anon'
   welcomed: false,
   navPosition: 'side',     // 'side' | 'top'
+  lyricAnimation: 'karaoke', // 'karaoke' | 'rise' | 'glow' | 'bounce' | 'fade'
 }
 
 let settingsCache = { ...DEFAULT_SETTINGS }

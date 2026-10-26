@@ -1005,6 +1005,7 @@ html:not(.dark) .nav-underline[data-active="true"] {
   .pop-in, .stagger-item, .reveal-grid > *, .page-enter, .page-exit,
   .progress-sheen::after,
   .intro-mark, .intro-ring, .intro-name, .intro-track, .intro-bar, .intro-halo,
+  .lrc-line-active, .lrc-word-now,
   .welcome-backdrop, .welcome-panel, .wizard-forward, .wizard-back,
   .menu-stagger > *,
   .gradient-text, .animate-glow, .animate-breathe, .animate-shake,
@@ -1085,19 +1086,11 @@ html.dark .lrc-line-active { color: rgb(229 231 235); }
 .lrc-line-active .lrc-word-on {
   color: rgb(17 24 39);
   opacity: 1;
-  text-shadow: 0 0 12px rgb(255 0 0 / 0.28);
 }
 html.dark .lrc-line-active .lrc-word { color: rgb(107 114 128); opacity: 0.8; }
 html.dark .lrc-line-active .lrc-word-on {
   color: #fff;
   opacity: 1;
-  text-shadow: 0 0 14px rgb(255 0 0 / 0.5);
-}
-.lrc-word-now { animation: lrcPop 340ms cubic-bezier(0.16, 1, 0.3, 1); }
-@keyframes lrcPop {
-  0% { transform: scale(1); }
-  40% { transform: scale(1.16); }
-  100% { transform: scale(1); }
 }
 
 /* Smooth karaoke fill. The word currently being sung is painted with a
@@ -1110,15 +1103,61 @@ html.dark .lrc-line-active { --lrc-on: #fff; --lrc-off: rgb(255 255 255 / 0.55);
 .lrc-ambient .lrc-line-active { --lrc-on: #fff; --lrc-off: rgb(255 255 255 / 0.5); }
 html.dark .lrc-ambient .lrc-line-active { --lrc-on: #fff; --lrc-off: rgb(255 255 255 / 0.5); }
 
-.lrc-line-active .lrc-word-now,
-html.dark .lrc-line-active .lrc-word-now,
-.lrc-ambient .lrc-line-active .lrc-word-now {
+.lrc-anim-karaoke .lrc-line-active .lrc-word-now,
+html.dark .lrc-anim-karaoke .lrc-line-active .lrc-word-now,
+.lrc-ambient.lrc-anim-karaoke .lrc-line-active .lrc-word-now {
   background-image: linear-gradient(90deg, var(--lrc-on) var(--p, 0%), var(--lrc-off) var(--p, 0%));
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
   opacity: 1;
+  animation: lrcPop 340ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.lrc-anim-karaoke .lrc-line-active .lrc-word-on {
+  text-shadow: 0 0 12px rgb(var(--accent) / 0.28);
+}
+html.dark .lrc-anim-karaoke .lrc-line-active .lrc-word-on,
+.lrc-ambient.lrc-anim-karaoke .lrc-line-active .lrc-word-on {
+  text-shadow: 0 0 14px rgb(var(--accent) / 0.45);
+}
+
+.lrc-anim-rise .lrc-line-active {
+  animation: lrcRise 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.lrc-anim-glow .lrc-line-active {
+  text-shadow: 0 0 16px rgb(var(--accent) / 0.55);
+}
+.lrc-anim-glow .lrc-word-now {
+  animation: lrcIn 280ms ease;
+}
+.lrc-anim-bounce .lrc-word-now {
+  animation: lrcBounce 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.lrc-anim-fade .lrc-line-active {
+  animation: lrcRise 360ms ease;
+}
+.lrc-anim-fade .lrc-word-now {
+  animation: lrcIn 240ms ease;
+}
+
+@keyframes lrcPop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+@keyframes lrcRise {
+  from { opacity: 0.4; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes lrcIn {
+  from { opacity: 0.25; }
+  to { opacity: 1; }
+}
+@keyframes lrcBounce {
+  0% { transform: translateY(3px) scale(0.94); }
+  50% { transform: translateY(-1px) scale(1.08); }
+  100% { transform: none; }
 }
 
 /* Background vocals ("(ooh)", "(You)") read as a lighter echo of the lead. */
@@ -1141,7 +1180,9 @@ html.dark .lrc-clickable:hover { background-color: rgb(255 255 255 / 0.06); }
 .lrc-ambient .lrc-line-active .lrc-word-on {
   color: #fff;
   opacity: 1;
-  text-shadow: 0 0 18px rgb(255 0 0 / 0.6), 0 0 4px rgb(255 255 255 / 0.35);
+}
+.lrc-ambient.lrc-anim-glow .lrc-line-active {
+  text-shadow: 0 0 18px rgb(var(--accent) / 0.65);
 }
 
 /* ── Minimal range inputs (seek + volume) ─────────────────── */
