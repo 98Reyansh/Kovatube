@@ -187,13 +187,13 @@ export default function Music() {
     <div className="animate-fade-in">
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <h1 className="text-lg font-medium tracking-tight mr-4">Music</h1>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-1.5">
           {TABS.map(t => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
               data-active={tab === t.id ? 'true' : 'false'}
-              className={`nav-underline text-[13px] pb-1 transition-colors ${
+              className={`nav-underline text-[13px] transition-colors ${
                 tab === t.id ? 'text-gray-900 dark:text-white' : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
               }`}
             >

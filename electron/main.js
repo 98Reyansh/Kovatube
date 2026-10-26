@@ -322,7 +322,9 @@ async function authedBrowse(body) {
         if (!body.context) body.context = {}
         body.context = Object.assign({}, cfg, body.context)
         if (body.context.client && typeof body.context.client === 'object') {
-          body.context.client = Object.assign({}, cfg.client || {}, body.context.client)
+          // The live page's client version and visitor data win. A hardcoded
+          // clientVersion makes the next page of the home feed come back empty.
+          body.context.client = Object.assign({}, body.context.client, cfg.client || {})
         } else {
           body.context.client = cfg.client || {}
         }
@@ -1268,16 +1270,23 @@ async function signedHomeFeed({ continuation = '', seen = [], force = false } = 
     let win = null
 
     if (continuation) {
-      const body = {
-        context: { client: { ...WEB_CLIENT } },
-        continuation,
-      }
-      const r = await authedBrowse(body)
+      const r = await authedBrowse({ continuation })
       if (!r.ok) {
         const status = r.status || 0
         const reason = (status === 401 || status === 403 || status === 429) ? 'expired' : 'request-error'
         console.log(`[Auth] home continuation HTTP ${status} → ${reason}`)
-        return { ok: false, reason, videos: [], continuation: '', hasMore: false }
+        if (reason === 'expired') return { ok: false, reason, videos: [], continuation: '', hasMore: false }
+        const extra = await loadFypMore({ cursor: 0, seen: [...seenSet] })
+        const moreVideos = extra?.videos || []
+        return {
+          ok: true,
+          reason: null,
+          videos: moreVideos,
+          continuation: '',
+          nextCursor: extra?.nextCursor || 0,
+          hasMore: !!(extra?.hasMore && moreVideos.length),
+          cached: false,
+        }
       }
       data = await r.json()
     } else {
@@ -1349,8 +1358,8 @@ async function signedHomeFeed({ continuation = '', seen = [], force = false } = 
     // Use different extraction logic for initial load vs continuation
     const nextCont = toastHomeContinuationSafe(continuation
       ? extractContinuationFromResponse(data)
-      : extractHomeContinuation(data, win))
-    if (!continuation) signedFeedCache = { ts: Date.now(), videos: all, continuation: nextCont, hasMore: !!nextCont }
+      : await extractHomeContinuation(data, win))
+    if (!continuation) signedFeedCache = { ts: Date.now(), videos: all, continuation: nextCont, hasMore: !!nextCont || all.length > 0 }
     console.log(`[Auth] signedHomeFeed: parsed ${all.length} videos, ${fresh.length} fresh, hasMore: ${!!nextCont}, contLen: ${(nextCont || '').length}`)
     if (fresh.length === 0 && all.length === 0) {
       console.log('[Auth] signedHomeFeed: ZERO videos found in data. Top keys:', Object.keys(data || {}))
@@ -1370,7 +1379,21 @@ async function signedHomeFeed({ continuation = '', seen = [], force = false } = 
         }
       } catch (e) { console.log('[Auth] feed debug error:', e.message) }
     }
-    return { ok: true, reason: null, videos: fresh, continuation: nextCont, hasMore: !!nextCont, cached: false }
+    if (continuation && fresh.length === 0) {
+      console.log('[Auth] home continuation returned no new videos, filling from the recommendation pool')
+      const extra = await loadFypMore({ cursor: 0, seen: [...seenSet] })
+      const moreVideos = extra?.videos || []
+      return {
+        ok: true,
+        reason: null,
+        videos: moreVideos,
+        continuation: '',
+        nextCursor: extra?.nextCursor || 0,
+        hasMore: !!(extra?.hasMore && moreVideos.length),
+        cached: false,
+      }
+    }
+    return { ok: true, reason: null, videos: fresh, continuation: nextCont, hasMore: !!nextCont || fresh.length > 0, cached: false }
   } catch (e) {
     console.error('[Auth] signedHomeFeed error:', e.message)
     return { ok: false, reason: 'request-error', videos: [], continuation: '', hasMore: false }
@@ -1418,71 +1441,59 @@ async function collectDomFeedVideos(win) {
   return Array.isArray(raw) ? raw : []
 }
 
-function extractHomeContinuation(data, win) {
-  let token = ''
-  const walk = (node) => {
-    if (!node || typeof node !== 'object') return
-    if (node.nextContinuationData?.continuation) {
-      token = node.nextContinuationData.continuation
-      return
+function tokenOn(node) {
+  if (!node || typeof node !== 'object') return ''
+  return node.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+    || node.continuationEndpoint?.continuationCommand?.token
+    || node.continuationCommand?.token
+    || node.nextContinuationData?.continuation
+    || ''
+}
+
+function tokenFromRichGrid(data) {
+  const tabs = data?.contents?.twoColumnBrowseResultsRenderer?.tabs || []
+  for (const tab of tabs) {
+    const grid = tab?.tabRenderer?.content?.richGridRenderer
+    if (!grid) continue
+    const contents = grid.contents || []
+    for (let i = contents.length - 1; i >= 0; i--) {
+      const token = tokenOn(contents[i])
+      if (token) return token
     }
-    if (node.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token) {
-      token = node.continuationItemRenderer.continuationEndpoint.continuationCommand.token
-      return
-    }
-    if (node.continuationCommand?.token) { token = node.continuationCommand.token; return }
-    for (const k of Object.keys(node)) {
-      const v = node[k]
-      if (v && typeof v === 'object') { if (!token) walk(v) }
-      else if (Array.isArray(v)) { if (!token) v.forEach(walk) }
+    for (const entry of grid.continuations || []) {
+      const token = tokenOn(entry)
+      if (token) return token
     }
   }
-  walk(data)
+  return ''
+}
 
-  // If not found in ytInitialData, try to extract from the DOM (continuation
-  // tokens can be embedded in the rich grid after lazy-loading)
-  if (!token && win) {
-    try {
-      const domToken = win.webContents.executeJavaScript(`(() => {
-        try {
-          // Look for continuation tokens in various DOM locations
-          const scripts = document.querySelectorAll('script')
-          for (const s of scripts) {
-            const m = s.textContent?.match(/"continuationCommand":\{"token":"([^"]+)"/) ||
-                           s.textContent?.match(/"nextContinuationData":\{"continuation":"([^"]+)"/)
-            if (m) return m[1]
+async function extractHomeContinuation(data, win) {
+  const fromGrid = tokenFromRichGrid(data)
+  if (fromGrid) return fromGrid
+  if (!win) return ''
+  try {
+    const domToken = await win.webContents.executeJavaScript(`(() => {
+      try {
+        const data = window.ytInitialData
+        const tabs = data && data.contents && data.contents.twoColumnBrowseResultsRenderer && data.contents.twoColumnBrowseResultsRenderer.tabs || []
+        for (const tab of tabs) {
+          const grid = tab.tabRenderer && tab.tabRenderer.content && tab.tabRenderer.content.richGridRenderer
+          if (!grid) continue
+          const contents = grid.contents || []
+          for (let i = contents.length - 1; i >= 0; i--) {
+            const item = contents[i] && contents[i].continuationItemRenderer
+            const token = item && item.continuationEndpoint && item.continuationEndpoint.continuationCommand && item.continuationEndpoint.continuationCommand.token
+            if (token) return token
           }
-          // Also check ytInitialData if it was updated
-          if (window.ytInitialData) {
-            const walk = (node) => {
-              if (!node || typeof node !== 'object') return null
-              if (node.nextContinuationData?.continuation) return node.nextContinuationData.continuation
-              if (node.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token) return node.continuationItemRenderer.continuationEndpoint.continuationCommand.token
-              if (node.continuationCommand?.token) return node.continuationCommand.token
-              for (const k of Object.keys(node)) {
-                const v = node[k]
-                if (v && typeof v === 'object') {
-                  const r = walk(v)
-                  if (r) return r
-                } else if (Array.isArray(v)) {
-                  for (const item of v) {
-                    const r = walk(item)
-                    if (r) return r
-                  }
-                }
-              }
-              return null
-            }
-            return walk(window.ytInitialData)
-          }
-        } catch (e) {}
+        }
         return ''
-      })()`).catch(() => '')
-      if (domToken) token = domToken
-    } catch (e) { /* ignore */ }
+      } catch (e) { return '' }
+    })()`).catch(() => '')
+    return typeof domToken === 'string' ? domToken : ''
+  } catch (e) {
+    return ''
   }
-
-  return token
 }
 
 function toastHomeContinuationSafe(t) {
@@ -1600,11 +1611,23 @@ async function loadSignedSubscriptions() {
 
 // Merge the signed-in account's YouTube subscriptions into the app's local
 // subscription list and persist. Returns the merged channel-name list.
+function rememberChannelAvatar(name, url) {
+  const key = (name || '').trim().toLowerCase()
+  let thumb = (url || '').trim()
+  if (!key || !thumb) return
+  if (thumb.startsWith('//')) thumb = 'https:' + thumb
+  if (!prefs.channelAvatars || typeof prefs.channelAvatars !== 'object') prefs.channelAvatars = {}
+  prefs.channelAvatars[key] = thumb
+}
+
 function syncGoogleSubscriptions(subs) {
   if (!Array.isArray(subs) || !subs.length) return prefs.subscriptions
+  if (!prefs.channelAvatars || typeof prefs.channelAvatars !== 'object') prefs.channelAvatars = {}
   for (const s of subs) {
     const name = (typeof s === 'string' ? s : (s && s.name)) || ''
+    const thumb = typeof s === 'object' && s ? (s.thumbnail || s.avatar || '') : ''
     if (name && !prefs.subscriptions.some(c => c.toLowerCase() === name.toLowerCase())) prefs.subscriptions.push(name)
+    if (name && thumb) rememberChannelAvatar(name, thumb)
   }
   savePrefs()
   newVideosCache = { ts: 0, key: '', data: null }
@@ -1729,16 +1752,20 @@ const SHORTS_QUERIES = ['#shorts', 'funny shorts', 'dance shorts', 'gaming short
 
 const PREFS_PATH = path.join(CONFIG_DIR, 'prefs.json')
 
-let prefs = { history: [], subscriptions: [] }
+let prefs = { history: [], subscriptions: [], channelAvatars: {} }
 
 function loadPrefs() {
   try {
     if (fs.existsSync(PREFS_PATH)) {
       const p = JSON.parse(fs.readFileSync(PREFS_PATH, 'utf-8'))
-      prefs = { history: Array.isArray(p.history) ? p.history : [], subscriptions: Array.isArray(p.subscriptions) ? p.subscriptions : [] }
+      prefs = {
+        history: Array.isArray(p.history) ? p.history : [],
+        subscriptions: Array.isArray(p.subscriptions) ? p.subscriptions : [],
+        channelAvatars: p.channelAvatars && typeof p.channelAvatars === 'object' ? p.channelAvatars : {},
+      }
     }
   } catch (e) { console.error('[Prefs] load error:', e.message) }
-  return { history: prefs.history, subscriptions: prefs.subscriptions }
+  return { history: prefs.history, subscriptions: prefs.subscriptions, channelAvatars: prefs.channelAvatars }
 }
 
 function savePrefs() {
@@ -3856,6 +3883,8 @@ const DEFAULT_SETTINGS = {
   smartDlClipboardCount: 0, // persistent count of clipboard smart downloads started
   smartDlInterval: 60,     // minutes between auto-download checks
   fypSource: 'auto',       // 'auto' (personalized when signed in) | 'signedIn' | 'anon'
+  welcomed: false,
+  navPosition: 'side',     // 'side' | 'top'
 }
 
 let settingsCache = { ...DEFAULT_SETTINGS }
@@ -5604,7 +5633,7 @@ function setupIPC() {
     const res = await loadSignedSubscriptions()
     if (res.ok) {
       const merged = syncGoogleSubscriptions(res.subscriptions)
-      return { ok: true, reason: null, subscriptions: merged, count: merged.length, synced: res.subscriptions.length, cached: !!res.cached }
+      return { ok: true, reason: null, subscriptions: merged, channelAvatars: prefs.channelAvatars || {}, count: merged.length, synced: res.subscriptions.length, cached: !!res.cached }
     }
     return { ok: false, reason: res.reason, subscriptions: prefs.subscriptions }
   })
@@ -5617,6 +5646,19 @@ function setupIPC() {
   ipcMain.handle('yt-channel', async (_e, channelName) => {
     console.log('[IPC] yt-channel:', channelName)
     return getChannelInfo(channelName)
+  })
+
+  ipcMain.handle('yt-channel-avatar', async (_e, channelName) => {
+    const key = (channelName || '').trim().toLowerCase()
+    if (!key) return ''
+    if (prefs.channelAvatars && prefs.channelAvatars[key]) return prefs.channelAvatars[key]
+    const hit = await resolveChannel(channelName)
+    if (hit?.avatar) {
+      rememberChannelAvatar(channelName, hit.avatar)
+      savePrefs()
+      return prefs.channelAvatars[key] || hit.avatar
+    }
+    return ''
   })
 
   ipcMain.handle('yt-channel-more', async (_e, token, channelName) => {

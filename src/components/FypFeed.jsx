@@ -106,10 +106,20 @@ export default function FypFeed() {
 
   useEffect(() => {
     const el = sentinelRef.current
+    const root = document.querySelector('main')
     if (!el) return
-    const obs = new IntersectionObserver(handleIntersect, { rootMargin: '200px' })
+    const obs = new IntersectionObserver(handleIntersect, { root: root || null, rootMargin: '800px' })
     obs.observe(el)
-    return () => obs.disconnect()
+    const onScroll = () => {
+      if (!root) return
+      if (root.scrollHeight - root.scrollTop - root.clientHeight < 900) handleIntersect([{ isIntersecting: true }])
+    }
+    root?.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+    return () => {
+      obs.disconnect()
+      root?.removeEventListener('scroll', onScroll)
+    }
   }, [handleIntersect])
 
   const isEmpty = !loading && !loadingMore && feed.length === 0 && loaded

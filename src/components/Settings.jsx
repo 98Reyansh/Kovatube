@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useSettings, ACCENT_PRESETS } from '../context/SettingsContext'
+import { useReplayWelcome } from './WelcomeWizard'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import { useSmartDownloads } from '../context/SmartDownloadContext'
@@ -40,6 +41,7 @@ function SettingRow({ title, description, children }) {
 
 export default function Settings() {
   const { settings, hydrated, updateSetting } = useSettings()
+  const replayWelcome = useReplayWelcome()
   const { addToast } = useToast()
   const { signedIn, account, signingIn, signIn, signOut } = useAuth()
   const { enabled: smartDlEnabled, clipboard: smartDlClipboard, counts, toggleSmartDownload, toggleClipboard, refreshStatus, resetCounts } = useSmartDownloads()
@@ -189,6 +191,32 @@ export default function Settings() {
                   />
                 ))}
               </div>
+            </SettingRow>
+
+            <SettingRow
+              title="Navigation"
+              description="Keep the library on the left, or move it to the top"
+            >
+              <select
+                value={settings.navPosition || 'side'}
+                onChange={(e) => updateSetting('navPosition', e.target.value)}
+                className="px-3 py-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm focus:outline-none focus:ring-2 focus:ring-yt-red/50 hover:border-yt-red/40"
+              >
+                <option value="side">Left</option>
+                <option value="top">Top</option>
+              </select>
+            </SettingRow>
+
+            <SettingRow
+              title="Welcome screen"
+              description="Show the first-launch welcome again"
+            >
+              <button
+                onClick={replayWelcome}
+                className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              >
+                Show again
+              </button>
             </SettingRow>
 
             <SettingRow

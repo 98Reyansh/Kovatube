@@ -9,11 +9,21 @@
   --accent: 255 0 0;            /* red   */
   --accent-hover: 185 28 28;
   --accent-light: 248 113 113;
-  --app-bg: 249 249 249;        /* light theme surface (#f9f9f9) */
+  --app-bg: 246 246 247;        /* light theme surface */
+  --shell: 251 251 253;
+  --panel: 255 255 255;
 }
 
-html.dark { --app-bg: 15 15 15; }          /* dark theme surface (#0f0f0f) */
-html.dark.amoled { --app-bg: 0 0 0; }      /* pure black AMOLED */
+html.dark {
+  --app-bg: 7 7 9;
+  --shell: 12 12 16;
+  --panel: 20 20 26;
+}
+html.dark.amoled {
+  --app-bg: 0 0 0;
+  --shell: 0 0 0;
+  --panel: 12 12 12;
+}
 
 /* Push common surfaces toward pure black in AMOLED mode */
 html.dark.amoled .dark\:bg-gray-800 { background-color: #0a0a0a !important; }
@@ -25,7 +35,10 @@ html.dark.amoled .dark\:border-gray-800 { border-color: #1a1a1a !important; }
 html.dark.amoled .dark\:border-gray-600 { border-color: #222 !important; }
 
 body {
-  @apply bg-white dark:bg-yt-dark text-gray-900 dark:text-white m-0 p-0 overflow-hidden;
+  @apply text-gray-900 dark:text-white m-0 p-0 overflow-hidden;
+  background-color: rgb(var(--app-bg));
+  background-image: radial-gradient(920px 460px at 12% -8%, rgb(var(--accent) / 0.14), transparent 62%);
+  background-attachment: fixed;
 }
 
 #root {
@@ -101,22 +114,15 @@ body {
   100% { background-position: 200% 0; }
 }
 .skeleton {
-  background-image: linear-gradient(
-    90deg,
-    rgba(120, 120, 120, 0.10) 25%,
-    rgba(120, 120, 120, 0.22) 50%,
-    rgba(120, 120, 120, 0.10) 75%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.6s linear infinite;
+  background: rgb(0 0 0 / 0.06);
+  animation: skeletonPulse 1.4s ease-in-out infinite;
 }
 html.dark .skeleton {
-  background-image: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.04) 25%,
-    rgba(255, 255, 255, 0.11) 50%,
-    rgba(255, 255, 255, 0.04) 75%
-  );
+  background: rgb(255 255 255 / 0.06);
+}
+@keyframes skeletonPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 /* ── Top loading bar ────────────────────────────────────────
@@ -143,6 +149,23 @@ html.dark .skeleton {
   align-items: center;
   justify-content: center;
   background: rgb(var(--app-bg));
+}
+.intro-halo {
+  position: absolute;
+  left: 50%;
+  top: 44%;
+  width: 340px;
+  height: 340px;
+  margin-left: -170px;
+  margin-top: -170px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgb(var(--accent) / 0.28), transparent 68%);
+  animation: introHalo 0.8s ease both;
+  pointer-events: none;
+}
+@keyframes introHalo {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 .intro-mark {
   position: relative;
@@ -356,14 +379,14 @@ button:active:not([role="switch"]),
 .stagger-item:nth-child(8) { animation-delay: 0.31s; }
 .stagger-item:nth-child(n+9) { animation-delay: 0.35s; }
 
-/* First row fades in. Later cards stay put — animating a full feed means
-   repainting every thumbnail, and this window has no GPU. */
+/* First row rises in. Later cards stay still so a long feed does not
+   animate every thumbnail at once. */
 @keyframes revealIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: none; }
 }
 .reveal-grid > * {
-  animation: revealIn 0.28s ease-out backwards;
+  animation: revealIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 .reveal-grid > *:nth-child(1) { animation-delay: 0.02s; }
 .reveal-grid > *:nth-child(2) { animation-delay: 0.05s; }
@@ -377,13 +400,19 @@ button:active:not([role="switch"]),
 
 /* ── Page / route transitions ─────────────────────────────── */
 @keyframes pageIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
 }
 @keyframes pageOut {
   to { opacity: 0; transform: translateY(-6px); }
 }
-.page-enter { animation: pageIn 0.22s ease-out both; }
+.page-enter { animation: pageIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+main h1.tracking-tight {
+  font-size: 1.7rem;
+  font-weight: 560;
+  letter-spacing: -0.04em;
+}
 .page-exit { animation: pageOut 0.15s ease-in both; }
 
 /* ── Accent gradient text ─────────────────────────────────── */
@@ -655,25 +684,32 @@ img { animation: none; }
 }
 
 /* Feed, search, and saved cards: the thumbnail lifts, the picture zooms,
-   a dim washes in, and a play disc scales up. */
+   a dim washes in, and a play disc scales up. Motion is transform and
+   opacity only, so the compositor can run it. */
 main a.group,
 .group.cursor-pointer {
-  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 main a.group:hover,
 .group.cursor-pointer:hover {
-  transform: translateY(-6px);
+  transform: translate3d(0, -8px, 0);
 }
 main a.group .aspect-video,
 main a.group .aspect-\[9\/16\],
 .group.cursor-pointer .aspect-video {
-  transition: box-shadow 320ms ease;
+  border-radius: 16px;
+  outline: 1px solid transparent;
+  outline-offset: 0;
+  transition: outline-color 240ms ease, box-shadow 380ms ease;
 }
 main a.group:hover .aspect-video,
 main a.group:hover .aspect-\[9\/16\],
 .group.cursor-pointer:hover .aspect-video,
 .thumb-zoom:hover {
-  box-shadow: 0 0 22px 2px rgb(var(--accent) / 0.28);
+  outline-color: rgb(var(--accent) / 0.55);
+  box-shadow:
+    0 22px 46px -18px rgb(var(--accent) / 0.42),
+    0 0 72px 8px rgb(var(--accent) / 0.16);
 }
 main a.group .aspect-video img,
 main a.group .aspect-\[9\/16\] img,
@@ -748,7 +784,170 @@ html.dark .group.cursor-pointer:hover h3 {
 }
 
 /* ── Nav underline slide indicator ────────────────────────── */
-.search-field { transition: border-color 200ms ease, box-shadow 200ms ease, background-color 200ms ease; }
+.search-field {
+  border-radius: 999px;
+  transition: border-color 200ms ease, box-shadow 200ms ease, background-color 200ms ease;
+}
+.app-header {
+  background: rgb(var(--app-bg));
+  border-bottom: 1px solid rgb(0 0 0 / 0.06);
+}
+html.dark .app-header { border-bottom-color: rgb(255 255 255 / 0.08); }
+
+.app-sidebar {
+  width: 248px;
+  flex-shrink: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: rgb(var(--shell));
+  border-right: 1px solid rgb(0 0 0 / 0.06);
+}
+html.dark .app-sidebar { border-right-color: rgb(255 255 255 / 0.08); }
+
+.app-topnav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  padding: 0 12px;
+  flex-shrink: 0;
+  background: rgb(var(--shell));
+  border-bottom: 1px solid rgb(0 0 0 / 0.06);
+}
+html.dark .app-topnav { border-bottom-color: rgb(255 255 255 / 0.08); }
+.app-topnav .side-link {
+  white-space: nowrap;
+  padding: 8px 10px;
+}
+
+.side-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: rgb(82 82 91);
+  transition: background-color 180ms ease, color 180ms ease, transform 180ms ease;
+}
+html.dark .side-link { color: rgb(161 161 170); }
+.side-link:hover {
+  background: rgb(0 0 0 / 0.04);
+  color: rgb(24 24 27);
+}
+html.dark .side-link:hover {
+  background: rgb(255 255 255 / 0.05);
+  color: rgb(244 244 245);
+}
+.side-link:active { transform: scale(0.99); }
+.side-link-active {
+  background: rgb(var(--accent) / 0.15);
+  color: rgb(24 24 27);
+}
+html.dark .side-link-active { color: rgb(244 244 245); }
+.side-link-active svg { color: rgb(var(--accent)); }
+
+.welcome-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 0.55);
+  animation: introHalo 180ms ease both;
+}
+.welcome-panel {
+  width: min(100%, 36rem);
+  border-radius: 24px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background: rgb(var(--panel));
+  padding: 24px;
+  box-shadow: 0 24px 60px rgb(0 0 0 / 0.35);
+  animation: modalPanel 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+html:not(.dark) .welcome-panel { border-color: rgb(0 0 0 / 0.08); }
+@keyframes modalPanel {
+  from { opacity: 0; transform: translateY(14px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.welcome-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.18);
+  transition: width 280ms cubic-bezier(0.16, 1, 0.3, 1), background-color 200ms ease;
+}
+html:not(.dark) .welcome-dot { background: rgb(0 0 0 / 0.15); }
+.welcome-dot-on {
+  width: 22px;
+  background: rgb(var(--accent));
+}
+.welcome-preview {
+  flex: 1;
+  border-radius: 16px;
+  border: 1px solid rgb(255 255 255 / 0.08);
+  background: rgb(var(--app-bg));
+  padding: 12px;
+}
+html:not(.dark) .welcome-preview { border-color: rgb(0 0 0 / 0.08); }
+.welcome-preview-accent {
+  transform: translateY(-8px);
+  border-color: rgb(var(--accent) / 0.45);
+  background: rgb(var(--accent) / 0.12);
+}
+.welcome-choice {
+  border-radius: 16px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background: rgb(var(--app-bg));
+  padding: 12px;
+  text-align: left;
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1), border-color 180ms ease;
+}
+html:not(.dark) .welcome-choice { border-color: rgb(0 0 0 / 0.08); }
+.welcome-choice:hover { transform: translateY(-2px); }
+.welcome-choice-on {
+  border-color: rgb(var(--accent));
+  background: rgb(var(--accent) / 0.14);
+}
+.welcome-primary {
+  border-radius: 999px;
+  background: rgb(var(--accent));
+  color: white;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 6px 14px;
+  transition: transform 150ms ease, background-color 150ms ease;
+}
+.welcome-primary:hover { transform: scale(1.03); background: rgb(var(--accent-hover)); }
+.welcome-primary:active { transform: scale(0.98); }
+.welcome-primary:disabled { opacity: 0.45; pointer-events: none; }
+.welcome-ghost {
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.06);
+  color: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 6px 14px;
+  transition: transform 150ms ease, background-color 150ms ease;
+}
+html:not(.dark) .welcome-ghost { background: rgb(0 0 0 / 0.05); }
+.welcome-ghost:hover { transform: scale(1.03); }
+.welcome-ghost:active { transform: scale(0.98); }
+.wizard-forward { animation: wizardForward 420ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.wizard-back { animation: wizardBack 420ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes wizardForward {
+  from { opacity: 0; transform: translateX(28px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes wizardBack {
+  from { opacity: 0; transform: translateX(-28px); }
+  to { opacity: 1; transform: none; }
+}
+html.dark .app-header {
+  border-bottom-color: rgb(255 255 255 / 0.06);
+}
 .search-field:hover { border-color: rgb(0 0 0 / 0.28); background: rgb(0 0 0 / 0.03); }
 html.dark .search-field:hover { border-color: rgb(255 255 255 / 0.28); background: rgb(255 255 255 / 0.04); }
 .search-field:focus {
@@ -756,26 +955,28 @@ html.dark .search-field:hover { border-color: rgb(255 255 255 / 0.28); backgroun
   box-shadow: 0 0 0 3px rgb(var(--accent) / 0.16);
 }
 
-.nav-underline { position: relative; }
-.nav-underline::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 1px;
-  border-radius: 9999px;
-  background: currentColor;
-  transform: scaleX(0);
-  transform-origin: left center;
-  transition: transform 280ms cubic-bezier(0.16, 1, 0.3, 1);
+.nav-underline {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 8px 16px;
+  line-height: 1.25;
+  transition: background-color 220ms ease, color 220ms ease;
 }
-.nav-underline:hover::after,
-.nav-underline[data-active="true"]::after {
-  transform: scaleX(1);
+.nav-underline::after { content: none; }
+.nav-underline:hover {
+  background: rgb(0 0 0 / 0.04);
 }
-.nav-underline[data-active="true"]::after {
-  transform-origin: left center;
+html.dark .nav-underline:hover {
+  background: rgb(255 255 255 / 0.06);
+}
+.nav-underline[data-active="true"] {
+  background: rgb(var(--accent) / 0.14);
+  color: rgb(var(--accent-light));
+}
+html:not(.dark) .nav-underline[data-active="true"] {
+  color: rgb(var(--accent-hover));
 }
 
 /* ── Highlight sweep (new badge / CTA) ────────────────────── */
@@ -803,7 +1004,8 @@ html.dark .search-field:hover { border-color: rgb(255 255 255 / 0.28); backgroun
   .animate-fade-out, .animate-zoom-out, .animate-slide-out-down,
   .pop-in, .stagger-item, .reveal-grid > *, .page-enter, .page-exit,
   .progress-sheen::after,
-  .intro-mark, .intro-ring, .intro-name, .intro-track, .intro-bar,
+  .intro-mark, .intro-ring, .intro-name, .intro-track, .intro-bar, .intro-halo,
+  .welcome-backdrop, .welcome-panel, .wizard-forward, .wizard-back,
   .menu-stagger > *,
   .gradient-text, .animate-glow, .animate-breathe, .animate-shake,
   .animate-spin-slow, .animate-marquee, .typing-dot, .sweep::before,

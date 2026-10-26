@@ -1,10 +1,32 @@
+import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useSubscriptions } from '../context/SubscriptionsContext'
 import { prewarmOnHover } from '../lib/prewarm'
 
+function ChannelPhoto({ name, url }) {
+  const [failed, setFailed] = useState(false)
+  const letter = (name || '?').charAt(0).toUpperCase()
+  if (!url || failed) {
+    return (
+      <span className="grid w-10 h-10 shrink-0 place-items-center rounded-full bg-black/[0.06] text-sm text-gray-700 dark:bg-white/10 dark:text-gray-200">
+        {letter}
+      </span>
+    )
+  }
+  return (
+    <img
+      src={url}
+      alt=""
+      className="w-10 h-10 shrink-0 rounded-full object-cover bg-black/[0.06] dark:bg-white/10"
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
 export default function Subscriptions() {
   const navigate = useNavigate()
-  const { subscriptions, unsubscribe, history } = useSubscriptions()
+  const { subscriptions, channelAvatars, unsubscribe, history } = useSubscriptions()
 
   return (
     <div className="max-w-4xl mx-auto space-y-10">
@@ -39,11 +61,11 @@ export default function Subscriptions() {
             <div key={channel} className="stagger-item flex items-center gap-3 py-3 border-b border-black/[0.06] dark:border-white/[0.06]">
               <button
                 onClick={() => navigate(`/channel/${encodeURIComponent(channel)}`)}
-                className="w-8 h-8 shrink-0 bg-black/[0.06] dark:bg-white/10 rounded-full flex items-center justify-center text-sm text-gray-700 dark:text-gray-200"
+                className="shrink-0"
                 title={`View ${channel} channel`}
-                aria-label="View channel"
+                aria-label={`View ${channel}`}
               >
-                {channel.charAt(0).toUpperCase()}
+                <ChannelPhoto name={channel} url={channelAvatars?.[(channel || '').toLowerCase()]} />
               </button>
               <button
                 onClick={() => navigate(`/channel/${encodeURIComponent(channel)}`)}
@@ -54,7 +76,7 @@ export default function Subscriptions() {
               </button>
               <button
                 onClick={() => unsubscribe(channel)}
-                className="text-xs text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 shrink-0"
+                className="shrink-0 rounded-full bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500"
               >
                 Unsubscribe
               </button>

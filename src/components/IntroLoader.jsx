@@ -4,6 +4,7 @@
 export default function IntroLoader() {
   return (
     <div className="intro" role="status" aria-label="Loading your feed">
+      <div className="intro-halo" aria-hidden />
       <div className="intro-mark">
         <span className="intro-ring" aria-hidden />
         <svg className="intro-play" viewBox="0 0 24 24" aria-hidden>

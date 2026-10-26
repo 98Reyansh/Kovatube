@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { HashRouter as Router, Routes, Route, useLocation } from 'react-router-dom'
 import HeaderBar from './components/HeaderBar'
+import Sidebar from './components/Sidebar'
+import WelcomeWizard, { WelcomeReplayProvider, hasSeenWelcome } from './components/WelcomeWizard'
 import Home from './components/Home'
 import VideoDetail from './components/VideoDetail'
 import Downloads from './components/Downloads'
@@ -15,7 +17,7 @@ import Music from './components/music/Music'
 import MusicBrowse from './components/music/MusicBrowse'
 import MusicDownloads from './components/music/MusicDownloads'
 import IntroLoader from './components/IntroLoader'
-import { SettingsProvider } from './context/SettingsContext'
+import { SettingsProvider, useSettings } from './context/SettingsContext'
 import { SearchProvider, useSearch } from './context/SearchContext'
 import { SubscriptionsProvider, useSubscriptions } from './context/SubscriptionsContext'
 import { DownloadProvider } from './context/DownloadContext'
@@ -62,10 +64,11 @@ function AnimatedRoutes() {
   const location = useLocation()
   const { current: queueCurrent } = useQueue()
   const { refreshToken } = useNetwork()
+  const fill = location.pathname === '/shorts'
   return (
-    <main className={`flex-1 overflow-auto transition-[padding] duration-300 ${queueCurrent ? 'pb-20' : 'pb-0'}`}>
-      <div key={location.pathname + ':' + refreshToken} className="h-full">
-        <div className="px-6 py-5 page-enter">
+    <main className={`min-h-0 flex-1 transition-[padding] duration-300 ${fill ? 'overflow-hidden' : 'overflow-auto'} ${queueCurrent ? 'pb-20' : 'pb-0'}`}>
+      <div key={location.pathname + ':' + refreshToken} className={fill ? 'h-full' : undefined}>
+        <div className="px-8 py-7 page-enter">
           <Routes location={location}>
             <Route path="/" element={<Home />} />
             <Route path="/video/:id" element={<VideoDetail />} />
@@ -89,8 +92,20 @@ function AnimatedRoutes() {
 
 function Layout() {
   const { checking } = useAuth()
+  const { settings, hydrated, updateSetting } = useSettings()
   const { isFirstLoad } = useSubscriptions()
   const [showIntro, setShowIntro] = useState(true)
+  const [welcomeOpen, setWelcomeOpen] = useState(false)
+  const welcomeDecided = useRef(false)
+  const topNav = settings.navPosition === 'top'
+
+  useEffect(() => {
+    if (!hydrated || welcomeDecided.current) return
+    welcomeDecided.current = true
+    const seen = settings.welcomed === true || hasSeenWelcome()
+    if (seen && settings.welcomed !== true) updateSetting('welcomed', true)
+    setWelcomeOpen(!seen)
+  }, [hydrated, settings.welcomed, updateSetting])
 
   useEffect(() => {
     if (!checking && !isFirstLoad) {
@@ -99,14 +114,21 @@ function Layout() {
   }, [checking, isFirstLoad])
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-yt-dark">
+    <WelcomeReplayProvider openWelcome={() => setWelcomeOpen(true)}>
+    <div className={`flex h-screen min-h-0 bg-white dark:bg-yt-dark ${topNav ? 'flex-col' : ''}`}>
       <TopProgressBar />
-      <HeaderBar />
-      {showIntro && <IntroLoader />}
-      <AnimatedRoutes />
-      <OfflineGate />
-      <MiniPlayer />
+      {!topNav && <Sidebar />}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {topNav && <Sidebar />}
+        <HeaderBar />
+        {showIntro && !welcomeOpen && <IntroLoader />}
+        <AnimatedRoutes />
+        <OfflineGate />
+        <MiniPlayer />
+      </div>
+      {welcomeOpen && <WelcomeWizard onDone={() => setWelcomeOpen(false)} />}
     </div>
+    </WelcomeReplayProvider>
   )
 }
 
