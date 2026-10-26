@@ -3478,7 +3478,8 @@ async function getMusicLibrary() {
 // music we only need the audio URL, which plays directly.
 async function getAudioStream(videoId) {
   if (!videoId) return { ok: false, reason: 'No video ID' }
-  const r = await getMediaUrls(videoId, 'auto')
+  // Songs should stay in the language they were recorded in, not an English dub.
+  const r = await getMediaUrls(videoId, 'auto', { preferEnglish: false })
   if (!r || !r.ok || !r.audioUrl) return { ok: false, reason: (r && r.reason) || 'No audio stream' }
   return { ok: true, audioUrl: r.audioUrl, source: r.source || 'unknown' }
 }
@@ -3486,8 +3487,63 @@ async function getAudioStream(videoId) {
 // ─── In-App Video Streaming (yt-dlp + ffmpeg HLS relay) ────────────────────
 
 const streamProcesses = new Map() // videoId -> { ffmpeg, ytdlp, dir }
-const streamUrlCache = new Map() // videoId -> { ts, videoUrl, audioUrl } (DASH URLs expire ~6h)
-const streamUrlInflight = new Map() // videoId -> Promise (shared while resolving)
+const streamUrlCache = new Map() // cacheKey -> { ts, videoUrl, audioUrl } (DASH URLs expire ~6h)
+const streamUrlInflight = new Map() // cacheKey -> Promise (shared while resolving)
+
+// YouTube lists every dub as its own audio format. Playback prefers English
+// (original English first, then an English dub). Music passes preferEnglish:false
+// so a song keeps its original track instead of a translated one.
+function audioTrackMeta(format) {
+  const track = format?.audioTrack || {}
+  const display = String(track.displayName || '')
+  const language = String(track.id || '').split('.')[0].toLowerCase()
+  const name = display.toLowerCase()
+  return {
+    language,
+    display,
+    descriptive: name.includes('descriptive'),
+    original: name.includes('original'),
+    english: language === 'en' || language.startsWith('en-') || name.startsWith('english'),
+    isDefault: track.audioIsDefault === true,
+    labeled: !!format?.audioTrack,
+  }
+}
+
+function audioRank(format, preferEnglish) {
+  const meta = audioTrackMeta(format)
+  if (meta.descriptive) return 0
+  if (preferEnglish && meta.english && meta.original) return 50
+  if (preferEnglish && meta.english && meta.isDefault) return 40
+  if (preferEnglish && meta.english) return 30
+  if (meta.original) return 20
+  if (meta.isDefault || !meta.labeled) return 10
+  return 1
+}
+
+function streamCacheKey(videoId, quality, preferEnglish) {
+  return `${videoId}|${quality || 'auto'}|${preferEnglish ? 'en' : 'orig'}`
+}
+
+function streamFormatSelector(quality, preferEnglish) {
+  const maxH = quality && quality !== 'auto' ? parseInt(quality, 10) : 1080
+  const cap = Number.isFinite(maxH) ? maxH : 1080
+  const video = `bestvideo[vcodec^=avc1][height<=${cap}]`
+  // English AAC first. If that track does not exist, fall back to the best AAC,
+  // which yt-dlp ranks by original language ahead of a random dub.
+  const english = preferEnglish
+    ? `${video}[ext=mp4]+bestaudio[ext=m4a][language^=en]/${video}+bestaudio[ext=m4a][language^=en]/`
+    : ''
+  return `${english}${video}[ext=mp4]+bestaudio[ext=m4a]/${video}+bestaudio`
+}
+
+function downloadFormatSelector(height) {
+  return [
+    `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a][language^=en]`,
+    `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]`,
+    `best[height<=${height}][ext=mp4]`,
+    `best[height<=${height}]`,
+  ].join('/')
+}
 
 // ── Stream URL resolution ───────────────────────────────────────────────────
 // Two strategies race on a cache miss:
@@ -3526,7 +3582,7 @@ const INNERTUBE_STREAM_CLIENTS = [
 // Pick an avc1/mp4 video URL + m4a audio URL with no signature cipher, capped
 // at the requested height (mirrors the yt-dlp format selector below). Anything
 // uncertain (ciphered, PO-token gated, live/HLS-only) returns null → yt-dlp.
-function pickInnertubePair(data, quality) {
+function pickInnertubePair(data, quality, preferEnglish = true) {
   if (data?.playabilityStatus?.status !== 'OK') return null
   const adaptive = data?.streamingData?.adaptiveFormats
   if (!Array.isArray(adaptive) || !adaptive.length) return null
@@ -3538,9 +3594,16 @@ function pickInnertubePair(data, quality) {
     .sort((a, b) => (b.height || 0) - (a.height || 0) || (b.bitrate || 0) - (a.bitrate || 0))
   const auds = adaptive
     .filter((f) => plain(f) && (f.mimeType || '').startsWith('audio/') && (f.mimeType || '').includes('mp4a'))
-    .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))
+    .sort((a, b) => audioRank(b, preferEnglish) - audioRank(a, preferEnglish) || (b.bitrate || 0) - (a.bitrate || 0))
   if (!vids.length || !auds.length) return null
-  return { videoUrl: vids[0].url, audioUrl: auds[0].url, height: vids[0].height }
+  const chosen = auds[0]
+  const meta = audioTrackMeta(chosen)
+  return {
+    videoUrl: vids[0].url,
+    audioUrl: chosen.url,
+    height: vids[0].height,
+    audioLabel: meta.display || meta.language || 'default',
+  }
 }
 
 // Visitor session for the player API: new uploads only hand fully readable
@@ -3606,7 +3669,7 @@ async function verifyPairReadable(pair) {
   return vOk && aOk
 }
 
-async function resolveInnertube(videoId, quality) {
+async function resolveInnertube(videoId, quality, preferEnglish = true) {
   for (const c of INNERTUBE_STREAM_CLIENTS) {
     const t0 = Date.now()
     try {
@@ -3616,10 +3679,10 @@ async function resolveInnertube(videoId, quality) {
         continue
       }
       const data = res.data
-      const pair = pickInnertubePair(data, quality)
+      const pair = pickInnertubePair(data, quality, preferEnglish)
       if (pair) {
         if (await verifyPairReadable(pair)) {
-          console.log(`[stream] innertube ${c.label} hit ${Date.now() - t0}ms h=${pair.height} (readable)`)
+          console.log(`[stream] innertube ${c.label} hit ${Date.now() - t0}ms h=${pair.height} audio=${pair.audioLabel} (readable)`)
           return { ok: true, ...pair }
         }
         console.log(`[stream] innertube ${c.label} rejected ${Date.now() - t0}ms (teaser-capped URLs)`)
@@ -3635,15 +3698,13 @@ async function resolveInnertube(videoId, quality) {
 
 // yt-dlp resolution, refactored to expose a kill handle so the race below can
 // discard it when the fast path wins first.
-function startYtDlpResolve(videoId, quality) {
+function startYtDlpResolve(videoId, quality, preferEnglish = true) {
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`
   // Force H.264 (avc1) video: AV1/VP9 won't mux into MPEG-TS as a real video
   // track with `-c copy` (becomes bin_data), so playback fails. Chromium handles
-  // H.264 + AAC, so constrain to avc1/m4a.
-  const vcodec = '[vcodec^=avc1]'
-  const format = quality && quality !== 'auto'
-    ? `bestvideo${vcodec}[height<=${parseInt(quality)}][ext=mp4]+bestaudio[ext=m4a]/bestvideo${vcodec}[height<=${parseInt(quality)}]+bestaudio`
-    : `bestvideo${vcodec}[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo${vcodec}[height<=1080]+bestaudio`
+  // H.264 + AAC, so constrain to avc1/m4a. English AAC is tried before any other
+  // language so a higher-bitrate dub cannot take the track.
+  const format = streamFormatSelector(quality, preferEnglish)
   let proc = null
   let exited = false
   const promise = new Promise((resolve) => {
@@ -3674,8 +3735,8 @@ function startYtDlpResolve(videoId, quality) {
   }
 }
 
-function raceResolveMediaUrls(videoId, quality) {
-  const ytdlp = startYtDlpResolve(videoId, quality)
+function raceResolveMediaUrls(videoId, quality, preferEnglish = true) {
+  const ytdlp = startYtDlpResolve(videoId, quality, preferEnglish)
   return new Promise((resolve) => {
     let done = false
     let ytdlpFailed = null
@@ -3695,7 +3756,7 @@ function raceResolveMediaUrls(videoId, quality) {
       if (r.ok) finish({ ...r, source: 'ytdlp' })
       else { ytdlpFailed = r; settleIfBothMissed() }
     })
-    resolveInnertube(videoId, quality).then((r) => {
+    resolveInnertube(videoId, quality, preferEnglish).then((r) => {
       if (r.ok) finish({ ...r, source: 'innertube' })
       else { innertubeMissed = true; settleIfBothMissed() }
     })
@@ -3703,35 +3764,37 @@ function raceResolveMediaUrls(videoId, quality) {
 }
 
 async function getMediaUrls(videoId, quality, opts = {}) {
+  const preferEnglish = opts.preferEnglish !== false
+  const key = streamCacheKey(videoId, quality, preferEnglish)
   // A previous innertube result failed relay startup: skip cache + fast path
   // and resolve cleanly with yt-dlp (registered as inflight so prewarm shares it).
   if (opts.forceYtDlp) {
-    const p = startYtDlpResolve(videoId, quality).promise
+    const p = startYtDlpResolve(videoId, quality, preferEnglish).promise
       .then((r) => {
-        if (r.ok) streamUrlCache.set(videoId, { ts: Date.now(), videoUrl: r.videoUrl, audioUrl: r.audioUrl, source: 'ytdlp' })
+        if (r.ok) streamUrlCache.set(key, { ts: Date.now(), videoUrl: r.videoUrl, audioUrl: r.audioUrl, source: 'ytdlp' })
         return { ...r, source: 'ytdlp' }
       })
-      .finally(() => { if (streamUrlInflight.get(videoId) === p) streamUrlInflight.delete(videoId) })
-    streamUrlInflight.set(videoId, p)
+      .finally(() => { if (streamUrlInflight.get(key) === p) streamUrlInflight.delete(key) })
+    streamUrlInflight.set(key, p)
     return p
   }
 
-  const cached = streamUrlCache.get(videoId)
+  const cached = streamUrlCache.get(key)
   if (cached && Date.now() - cached.ts < 3.5 * 3600 * 1000) {
     console.log('[stream] using cached URLs for', videoId, `(${cached.source || 'ytdlp'})`)
     return { ok: true, videoUrl: cached.videoUrl, audioUrl: cached.audioUrl, source: 'cache' }
   }
   // Dedupe concurrent resolution (e.g. prewarm racing the actual stream start).
-  const inflight = streamUrlInflight.get(videoId)
+  const inflight = streamUrlInflight.get(key)
   if (inflight) return inflight
 
-  const p = raceResolveMediaUrls(videoId, quality)
+  const p = raceResolveMediaUrls(videoId, quality, preferEnglish)
     .then((r) => {
-      if (r.ok) streamUrlCache.set(videoId, { ts: Date.now(), videoUrl: r.videoUrl, audioUrl: r.audioUrl, source: r.source })
+      if (r.ok) streamUrlCache.set(key, { ts: Date.now(), videoUrl: r.videoUrl, audioUrl: r.audioUrl, source: r.source })
       return r
     })
-    .finally(() => { if (streamUrlInflight.get(videoId) === p) streamUrlInflight.delete(videoId) })
-  streamUrlInflight.set(videoId, p)
+    .finally(() => { if (streamUrlInflight.get(key) === p) streamUrlInflight.delete(key) })
+  streamUrlInflight.set(key, p)
   return p
 }
 
@@ -3744,6 +3807,10 @@ function startHlsRelay(videoId, videoUrl, audioUrl, cb) {
     '-y',
     '-i', videoUrl,
     '-i', audioUrl,
+    // The video file can carry its own dubbed audio. Use the video picture and
+    // the audio file chosen above, not whichever track ffmpeg ranks higher.
+    '-map', '0:v:0',
+    '-map', '1:a:0',
     '-c', 'copy',
     '-f', 'hls',
     '-hls_time', '1',
@@ -3838,7 +3905,7 @@ async function startPlaybackStream(videoId, quality, onPhase) {
   // (dead/throttled/odd codec), invalidate them and retry once with yt-dlp only.
   if (!relay.ok && source === 'innertube') {
     console.log(`[stream] innertube relay failed (${relay.reason}) — retrying with yt-dlp`)
-    streamUrlCache.delete(videoId)
+    streamUrlCache.delete(streamCacheKey(videoId, quality, true))
     phase('resolving')
     urls = await getMediaUrls(videoId, quality, { forceYtDlp: true })
     if (!urls.ok) return { ok: false, reason: urls.reason }
@@ -4245,7 +4312,7 @@ function startManualYtDlp(dlId) {
   if (isAudio) {
     args.push('-f', 'bestaudio/best', '--extract-audio', '--audio-format', (dl.format === 'mp4' || !dl.format || dl.audio) ? 'mp3' : (dl.format === 'mp3' ? 'mp3' : 'm4a'), '--audio-quality', '0')
   } else {
-    args.push('-f', `bestvideo[height<=${height}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${height}][ext=mp4]/best[height<=${height}]`)
+    args.push('-f', downloadFormatSelector(height))
     args.push('--merge-output-format', 'mp4')
   }
 
@@ -4864,7 +4931,7 @@ function startSmartDownload(videoId, url, onDone, source = 'fyp') {
   const outputTemplate = path.join(VIDEOS_DIR, '%(title)s [%(id)s].%(ext)s')
 
   const args = [
-    '-f', 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[height<=720]',
+    '-f', downloadFormatSelector(720),
     '--merge-output-format', 'mp4',
     '--no-playlist',
     '--newline',
