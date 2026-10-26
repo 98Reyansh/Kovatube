@@ -27,6 +27,7 @@ const DEFAULTS = {
   fypSource: 'auto', // 'auto' (personalized when signed in) | 'signedIn' | 'anon'
   welcomed: false, // first-launch welcome has been dismissed
   navPosition: 'side', // 'side' | 'top'
+  lyricAnimation: 'karaoke', // 'karaoke' | 'rise' | 'glow' | 'bounce' | 'fade'
 }
 
 export const ACCENT_PRESETS = {

@@ -208,6 +208,23 @@ export default function Settings() {
             </SettingRow>
 
             <SettingRow
+              title="Lyrics animation"
+              description="How the line being sung moves"
+            >
+              <select
+                value={settings.lyricAnimation || 'karaoke'}
+                onChange={(e) => updateSetting('lyricAnimation', e.target.value)}
+                className="px-3 py-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm focus:outline-none focus:ring-2 focus:ring-yt-red/50 hover:border-yt-red/40"
+              >
+                <option value="karaoke">Karaoke</option>
+                <option value="rise">Rise</option>
+                <option value="glow">Glow</option>
+                <option value="bounce">Bounce</option>
+                <option value="fade">Fade</option>
+              </select>
+            </SettingRow>
+
+            <SettingRow
               title="Welcome screen"
               description="Show the first-launch welcome again"
             >
