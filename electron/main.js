@@ -7,13 +7,6 @@ const http = require('http')
 const crypto = require('crypto')
 const { spawn, execFile } = require('child_process')
 
-// This Fedora machine crashes if Chromium starts a GPU process. Mac and
-// Windows keep hardware acceleration.
-if (process.platform === 'linux') {
-  app.disableHardwareAcceleration()
-  app.commandLine.appendSwitch('disable-gpu')
-}
-
 // Keep the Chromium profile separate from the app's own data dir, and stable
 // between dev and packaged builds. Linux: ~/.config/kovatube. macOS:
 // ~/Library/Application Support/kovatube. Windows: %APPDATA%\kovatube.
@@ -1852,20 +1845,51 @@ function extractKeywords(text, limit = 6) {
   return Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, limit).map(e => e[0])
 }
 
-async function loadShortsFeed(vData) {
+async function loadShortsFeed(vData, onBatch) {
   const combined = { shorts: [], visitorData: vData || '', error: null }
   const seen = new Set()
-  for (const q of SHORTS_QUERIES) {
-    try {
-      const r = await searchYouTube(q, combined.visitorData || vData)
-    if (r.visitorData) combined.visitorData = r.visitorData
-      if (r.error && !combined.error) combined.error = r.error
-      for (const s of r.shorts || []) {
-        if (s.id && !seen.has(s.id)) { seen.add(s.id); combined.shorts.push(s) }
+  const concurrency = 3
+  let cursor = 0
+  let running = 0
+  let stop = false
+
+  const add = (list) => {
+    let added = 0
+    for (const s of list || []) {
+      if (s?.id && !seen.has(s.id)) {
+        seen.add(s.id)
+        combined.shorts.push(s)
+        added++
       }
-    } catch { /* continue with next query */ }
-    if (combined.shorts.length >= 20) break
+    }
+    if (added && onBatch) onBatch(combined.shorts.slice())
+    if (combined.shorts.length >= 24) stop = true
   }
+
+  await new Promise((resolve) => {
+    const pump = () => {
+      if ((stop || cursor >= SHORTS_QUERIES.length) && running === 0) {
+        resolve()
+        return
+      }
+      while (!stop && running < concurrency && cursor < SHORTS_QUERIES.length) {
+        const q = SHORTS_QUERIES[cursor++]
+        running++
+        searchYouTube(q, combined.visitorData || vData)
+          .then((r) => {
+            if (r?.visitorData) combined.visitorData = r.visitorData
+            if (r?.error && !combined.error) combined.error = r.error
+            add(r?.shorts)
+          })
+          .catch(() => {})
+          .finally(() => {
+            running--
+            pump()
+          })
+      }
+    }
+    pump()
+  })
   return combined
 }
 
@@ -5659,9 +5683,16 @@ function setupIPC() {
     return r
   })
 
-  ipcMain.handle('yt-shorts-feed', async () => {
+  ipcMain.handle('yt-shorts-feed', async (event) => {
     console.log('[IPC] yt-shorts-feed')
-    const r = await loadShortsFeed(visitorData)
+    let lastSent = 0
+    const r = await loadShortsFeed(visitorData, (shorts) => {
+      if (shorts.length === lastSent) return
+      lastSent = shorts.length
+      if (event.sender && !event.sender.isDestroyed()) {
+        event.sender.send('shorts-feed-more', { shorts })
+      }
+    })
     if (r.visitorData) visitorData = r.visitorData
     return r
   })

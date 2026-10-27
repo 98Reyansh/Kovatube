@@ -3,31 +3,47 @@ import { useNavigate } from 'react-router-dom'
 import Hls from 'hls.js'
 import { pushMediaFocus } from '../mediaFocus'
 
-function ShortView({ short, onReady }) {
+const PRELOAD_COUNT = 5
+const SHORTS_QUALITY = '720'
+
+export function shortsPreloadWindow(shorts, index, count = PRELOAD_COUNT) {
+  if (!shorts.length) return []
+  const i = Math.max(0, Math.min(index, shorts.length - 1))
+  let from = Math.max(0, i - 1)
+  let to = Math.min(shorts.length, from + count)
+  if (to - from < count) from = Math.max(0, to - count)
+  return shorts.slice(from, to)
+}
+
+function ShortView({ short, active, muted, onMuted, onReady }) {
   const [streamUrl, setStreamUrl] = useState(null)
   const [streamError, setStreamError] = useState(null)
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
-  const [muted, setMuted] = useState(false)
-  const [volume, setVolume] = useState(1)
 
   const videoRef = useRef(null)
   const hlsRef = useRef(null)
+  const readySent = useRef(false)
+
+  const signalReady = () => {
+    if (readySent.current) return
+    readySent.current = true
+    onReady && onReady(short.id)
+  }
 
   useEffect(() => {
     let cancelled = false
     const load = async () => {
-      if (!window.electronAPI) { setStreamError('No stream API'); return }
-      const r = await window.electronAPI.ytStream(short.id, 'auto').catch(e => ({ ok: false, reason: e.message }))
-      if (cancelled) return
-      if (r?.ok && r.url) {
-        setStreamUrl(r.url)
-        onReady && onReady()
-      } else {
-        setStreamError(r?.reason || 'Unable to load stream')
-        onReady && onReady()
+      if (!window.electronAPI) { setStreamError('No stream API'); signalReady(); return }
+      let r = await window.electronAPI.ytStream(short.id, SHORTS_QUALITY).catch(e => ({ ok: false, reason: e.message }))
+      if (!r?.ok) {
+        r = await window.electronAPI.ytStream(short.id, 'auto').catch(e => ({ ok: false, reason: e.message }))
       }
+      if (cancelled) return
+      if (r?.ok && r.url) setStreamUrl(r.url)
+      else setStreamError(r?.reason || 'Unable to load stream')
+      signalReady()
     }
     load()
 
@@ -45,11 +61,12 @@ function ShortView({ short, onReady }) {
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
+        maxBufferLength: 12,
         manifestLoadingMaxRetry: 6,
-        manifestLoadingRetryDelay: 300,
+        manifestLoadingRetryDelay: 200,
         manifestLoadingTimeOut: 20000,
         fragLoadingMaxRetry: 6,
-        fragLoadingRetryDelay: 300,
+        fragLoadingRetryDelay: 200,
         fragLoadingTimeOut: 20000,
       })
       hlsRef.current = hls
@@ -61,10 +78,8 @@ function ShortView({ short, onReady }) {
         else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError()
         else { hls.destroy(); hlsRef.current = null; setStreamError('Stream playback error') }
       })
-      video.play().catch(() => {})
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = streamUrl
-      video.play().catch(() => {})
     } else {
       setStreamError('HLS playback not supported')
     }
@@ -72,14 +87,29 @@ function ShortView({ short, onReady }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamUrl])
 
-  const togglePlay = () => {
+  useEffect(() => {
     const video = videoRef.current
     if (!video) return
-    if (video.paused) { video.play().catch(() => {}); setPlaying(true) }
-    else { video.pause(); setPlaying(false) }
-  }
+    video.muted = !active || muted
+    if (!streamUrl) return
+    if (active) video.play().catch(() => {})
+    else video.pause()
+  }, [active, muted, streamUrl])
 
-  // Music and video share the speakers: stand down when the music player takes over.
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current
+    if (!video || !streamUrl) return
+    if (video.paused) video.play().catch(() => {})
+    else video.pause()
+  }, [streamUrl])
+
+  useEffect(() => {
+    if (!active) return
+    const onToggle = () => togglePlay()
+    window.addEventListener('shorts-toggle', onToggle)
+    return () => window.removeEventListener('shorts-toggle', onToggle)
+  }, [active, togglePlay])
+
   useEffect(() => {
     const onMusicPlay = () => { const v = videoRef.current; if (v && !v.paused) v.pause() }
     window.addEventListener('yt-music-play', onMusicPlay)
@@ -97,35 +127,31 @@ function ShortView({ short, onReady }) {
   return (
     <div
       className="relative w-full h-full bg-black overflow-hidden select-none"
-      onClick={togglePlay}
+      onClick={active ? togglePlay : undefined}
     >
       <video
         ref={videoRef}
-        autoPlay
         playsInline
+        loop
+        preload="auto"
         className="w-full h-full object-contain"
-        onPlay={() => { setPlaying(true); window.dispatchEvent(new Event('yt-video-play')) }}
+        onPlay={() => { setPlaying(true); if (active) window.dispatchEvent(new Event('yt-video-play')) }}
         onPause={() => setPlaying(false)}
-        onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+        onTimeUpdate={(e) => { if (active) setCurrentTime(e.currentTarget.currentTime) }}
         onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
-        onVolumeChange={(e) => { setVolume(e.currentTarget.volume); setMuted(e.currentTarget.muted) }}
       />
 
-      {/* Top progress bar */}
-      <div className="absolute top-2 left-1/2 -translate-x-1/2 w-2/3 h-1 rounded-full bg-white/20 overflow-hidden pointer-events-none">
+      <div className="absolute top-0 inset-x-0 h-1 bg-white/20 pointer-events-none">
         <div className="h-full bg-yt-red" style={{ width: `${progress}%` }} />
       </div>
 
-      {/* Loading state */}
-      {!streamUrl && !streamError && (
+      {!streamUrl && !streamError && active && (
         <div className="absolute inset-0 flex items-center justify-center bg-black">
-          <div className="relative">
-            <div className="w-14 h-14 rounded-full border-4 border-yt-red/25 border-t-yt-red animate-spin" />
-          </div>
+          <div className="w-14 h-14 rounded-full border-4 border-yt-red/25 border-t-yt-red animate-spin" />
         </div>
       )}
 
-      {streamError && (
+      {streamError && active && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black px-6 text-center">
           <svg className="w-12 h-12 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
@@ -136,8 +162,7 @@ function ShortView({ short, onReady }) {
         </div>
       )}
 
-      {/* Center play button when paused */}
-      {!playing && streamUrl && !streamError && (
+      {active && !playing && streamUrl && !streamError && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <span className="w-16 h-16 rounded-full glass-dark flex items-center justify-center animate-scale-in">
             <svg className="w-7 h-7 text-white ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
@@ -145,32 +170,34 @@ function ShortView({ short, onReady }) {
         </div>
       )}
 
-      {/* Bottom info panel */}
-      <div className="absolute bottom-0 inset-x-0 p-4 bg-gradient-to-t from-black/80 via-black/20 to-transparent pointer-events-none">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-yt-red to-pink-500 flex items-center justify-center text-white text-sm font-medium shrink-0">
-            {(short.channel || '?').charAt(0).toUpperCase()}
+      {active && (
+        <div className="absolute bottom-0 inset-x-0 p-4 pb-5 bg-gradient-to-t from-black/80 via-black/20 to-transparent pointer-events-none">
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-yt-red to-pink-500 flex items-center justify-center text-white text-sm font-medium shrink-0">
+              {(short.channel || '?').charAt(0).toUpperCase()}
+            </div>
+            <span className="text-white text-sm font-medium truncate">{short.channel}</span>
+            <span className="text-[10px] uppercase tracking-wider text-white/50 bg-white/10 px-2 py-0.5 rounded">Short</span>
           </div>
-          <span className="text-white text-sm font-medium truncate">{short.channel}</span>
-          <span className="text-[10px] uppercase tracking-wider text-white/50 bg-white/10 px-2 py-0.5 rounded">Short</span>
+          <p className="text-white text-sm font-medium line-clamp-2 drop-shadow">{short.title}</p>
+          <p className="text-white/70 text-xs mt-0.5">{short.views}</p>
         </div>
-        <p className="text-white text-sm font-medium line-clamp-2 drop-shadow">{short.title}</p>
-        <p className="text-white/70 text-xs mt-0.5">{short.views}</p>
-      </div>
+      )}
 
-      {/* Mute + time (right side, above nav) */}
-      <div className="absolute bottom-24 right-3 flex flex-col gap-3 pointer-events-auto">
-        <button
-          onClick={(e) => { e.stopPropagation(); const v = videoRef.current; if (v) v.muted = !v.muted }}
-          className="w-10 h-10 rounded-full glass-dark hover:bg-black/60 flex items-center justify-center text-white transition hover-ring"
-          title="Mute"
-        >
-          {muted || volume === 0
-            ? <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M16.5 12a4.5 4.5 0 00-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.796 8.796 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 003.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" /></svg>
-            : <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05A4.5 4.5 0 0016.5 12zM14 3.23v2.06a7 7 0 010 13.42v2.06c5.12-.51 9-4.8 9-9.77s-3.88-9.26-9-9.77z" /></svg>}
-        </button>
-        <span className="text-center text-white/80 text-xs tabular-nums">{fmt(currentTime)}</span>
-      </div>
+      {active && (
+        <div className="absolute bottom-24 right-3 flex flex-col gap-3 pointer-events-auto">
+          <button
+            onClick={(e) => { e.stopPropagation(); onMuted(!muted) }}
+            className="w-10 h-10 rounded-full glass-dark hover:bg-black/60 flex items-center justify-center text-white transition hover-ring"
+            title="Mute"
+          >
+            {muted
+              ? <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M16.5 12a4.5 4.5 0 00-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.796 8.796 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 003.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" /></svg>
+              : <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 7.97v8.05A4.5 4.5 0 0016.5 12zM14 3.23v2.06a7 7 0 010 13.42v2.06c5.12-.51 9-4.8 9-9.77s-3.88-9.26-9-9.77z" /></svg>}
+          </button>
+          <span className="text-center text-white/80 text-xs tabular-nums">{fmt(currentTime)}</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -191,32 +218,79 @@ export default function ShortsFeed() {
   const [error, setError] = useState(null)
   const [index, setIndex] = useState(0)
   const [ready, setReady] = useState(false)
+  const [moved, setMoved] = useState(false)
+  const [muted, setMuted] = useState(false)
+  const [started, setStarted] = useState([])
   const wheelLock = useRef(0)
   const indexRef = useRef(0)
+  const shortsRef = useRef(shorts)
+  const readyIds = useRef(new Set())
   indexRef.current = index
+  shortsRef.current = shorts
+
+  const mergeShorts = useCallback((list) => {
+    if (!list?.length) return
+    setShorts((prev) => {
+      const seen = new Set(prev.map((s) => s.id))
+      const next = [...prev]
+      for (const s of list) {
+        if (s?.id && !seen.has(s.id)) {
+          seen.add(s.id)
+          next.push(s)
+        }
+      }
+      return next.length === prev.length ? prev : next
+    })
+    setLoading(false)
+  }, [])
+
+  const loadFeed = useCallback(async () => {
+    if (!window.electronAPI) { setError('Electron API not available'); setLoading(false); return }
+    const data = await window.electronAPI.ytShortsFeed().catch(() => null)
+    if (data?.shorts?.length) mergeShorts(data.shorts)
+    else setError((err) => err || data?.error || 'Could not load Shorts')
+    setLoading(false)
+  }, [mergeShorts])
 
   useEffect(() => {
     let cancelled = false
-    const load = async () => {
-      if (!window.electronAPI) { setError('Electron API not available'); setLoading(false); return }
-      const data = await window.electronAPI.ytShortsFeed().catch(() => null)
-      if (cancelled) return
-      if (data?.shorts?.length) setShorts(data.shorts)
-      else if (data?.error) setError(data.error)
-      else setError('Could not load Shorts')
-      setLoading(false)
+    const onMore = (data) => { if (!cancelled) mergeShorts(data?.shorts) }
+    window.electronAPI?.onShortsFeedMore?.(onMore)
+    loadFeed()
+    return () => {
+      cancelled = true
+      window.electronAPI?.removeShortsFeedMoreListeners?.()
     }
-    load()
-    return () => { cancelled = true }
+  }, [loadFeed, mergeShorts])
+
+  const armWindow = useCallback(() => {
+    const ids = shortsPreloadWindow(shortsRef.current, indexRef.current).map((s) => s.id)
+    setStarted(ids)
   }, [])
+
+  useEffect(() => {
+    const id = shorts[index]?.id
+    if (!id) return
+    setStarted((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    if (readyIds.current.has(id)) armWindow()
+  }, [shorts, index, armWindow])
+
+  const markReady = useCallback((id) => {
+    readyIds.current.add(id)
+    if (id === shortsRef.current[indexRef.current]?.id) {
+      setReady(true)
+      armWindow()
+    }
+  }, [armWindow])
 
   const step = useCallback((dir) => {
     const cur = indexRef.current
-    const next = cur + dir
-    if (next < 0 || next >= shorts.length) return
-    setReady(false)
-    setIndex(next)
-  }, [shorts.length])
+    const nextIndex = cur + dir
+    if (nextIndex < 0 || nextIndex >= shortsRef.current.length) return
+    setMoved(true)
+    setReady(readyIds.current.has(shortsRef.current[nextIndex]?.id))
+    setIndex(nextIndex)
+  }, [])
 
   const next = useCallback(() => step(1), [step])
   const prev = useCallback(() => step(-1), [step])
@@ -224,7 +298,7 @@ export default function ShortsFeed() {
   const handleWheel = useCallback((e) => {
     e.preventDefault()
     const now = Date.now()
-    if (now - wheelLock.current < 800) return
+    if (now - wheelLock.current < 500) return
     if (Math.abs(e.deltaY) < 20) return
     wheelLock.current = now
     if (e.deltaY > 0) next()
@@ -232,24 +306,35 @@ export default function ShortsFeed() {
   }, [next, prev])
 
   useEffect(() => {
-    // The feed owns the arrow keys while it is on screen, so the music
-    // player's always-on shortcuts stand down here.
     const releaseFocus = pushMediaFocus('shorts')
     const onKey = (e) => {
       if (e.key === 'ArrowDown' || e.key === 'PageDown') { e.preventDefault(); next() }
       else if (e.key === 'ArrowUp' || e.key === 'PageUp') { e.preventDefault(); prev() }
+      else if (e.key === ' ' || e.key === 'k') { e.preventDefault(); window.dispatchEvent(new Event('shorts-toggle')) }
     }
     window.addEventListener('keydown', onKey)
     return () => { window.removeEventListener('keydown', onKey); releaseFocus() }
   }, [next, prev])
 
   const short = shorts[index]
+  const mounted = shortsPreloadWindow(shorts, index).filter((s) => started.includes(s.id))
+
+  const retry = () => {
+    setError(null)
+    setLoading(true)
+    setShorts([])
+    setIndex(0)
+    setReady(false)
+    setStarted([])
+    readyIds.current = new Set()
+    loadFeed()
+  }
 
   return (
     <div className="flex items-center justify-center w-full h-full bg-black overflow-hidden relative" onWheel={handleWheel}>
-      {loading ? (
+      {loading && shorts.length === 0 ? (
         <Skeleton />
-      ) : error ? (
+      ) : error && shorts.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-3 text-center px-6">
           <svg className="w-14 h-14 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
@@ -257,15 +342,14 @@ export default function ShortsFeed() {
           <p className="text-white/80 font-medium">Shorts couldn't load</p>
           <p className="text-white/50 text-sm max-w-sm">{error}</p>
           <button
-            onClick={() => { setError(null); setLoading(true); setShorts([]); (async () => { const d = await window.electronAPI.ytShortsFeed(); if (d?.shorts?.length) setShorts(d.shorts); else setError(d?.error || 'Could not load Shorts'); setLoading(false) })() }}
+            onClick={retry}
             className="mt-2 px-4 py-2 text-sm rounded-lg bg-yt-red hover:bg-yt-red-hover text-white transition"
           >
             Retry
           </button>
         </div>
-      ) : (
+      ) : short ? (
         <>
-          {/* Top bar */}
           <div className="absolute top-0 inset-x-0 z-20 flex items-center justify-between p-3">
             <button
               onClick={() => navigate('/')}
@@ -284,16 +368,26 @@ export default function ShortsFeed() {
             <div className="w-10" />
           </div>
 
-          {/* The current short */}
           <div
-            key={short.id}
-            className="relative rounded-xl overflow-hidden shadow-2xl aspect-[9/16]"
-            style={{ height: 'min(78vh, calc(100vw * 16 / 9))' }}
+            className="relative rounded-xl overflow-hidden shadow-2xl aspect-[9/16] bg-black"
+            style={{ height: 'min(100%, calc(100vw * 0.56))', maxHeight: '100%' }}
           >
-            <ShortView short={short} onReady={() => setReady(true)} />
+            {mounted.map((item) => (
+              <div
+                key={item.id}
+                className={`absolute inset-0 ${item.id === short.id ? 'visible' : 'invisible pointer-events-none'}`}
+              >
+                <ShortView
+                  short={item}
+                  active={item.id === short.id}
+                  muted={muted}
+                  onMuted={setMuted}
+                  onReady={markReady}
+                />
+              </div>
+            ))}
           </div>
 
-          {/* Right side navigation */}
           <div className="absolute right-4 top-1/2 -translate-y-1/2 z-20 flex flex-col gap-3">
             <button
               onClick={prev}
@@ -317,16 +411,15 @@ export default function ShortsFeed() {
             </button>
           </div>
 
-          {/* Scroll hint */}
-          {!ready && index < shorts.length - 1 && (
-            <div className="absolute bottom-4 inset-x-0 z-20 flex justify-center">
+          {ready && !moved && index < shorts.length - 1 && (
+            <div className="absolute bottom-4 inset-x-0 z-20 flex justify-center pointer-events-none">
               <span className="text-white/70 text-xs glass-dark px-3 py-1.5 rounded-full animate-fade-in">
-                Scroll or press ↓ for next
+                Scroll, or press ↓, for the next short
               </span>
             </div>
           )}
         </>
-      )}
+      ) : null}
     </div>
   )
 }
