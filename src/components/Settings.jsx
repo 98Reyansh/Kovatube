@@ -152,7 +152,7 @@ export default function Settings() {
             <h2 className="text-xs text-gray-400 dark:text-gray-500">Appearance</h2>
             <SettingRow
               title="Theme"
-              description="Light, Dark, or pure black AMOLED"
+              description="Light, Dark, AMOLED, or Material"
               icon={
                 <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
@@ -167,6 +167,21 @@ export default function Settings() {
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
                 <option value="amoled">AMOLED Black</option>
+                <option value="material">Material</option>
+              </select>
+            </SettingRow>
+
+            <SettingRow
+              title="Music look"
+              description="Apple Music opens a large now-playing screen, closer to the phone player"
+            >
+              <select
+                value={settings.musicStyle || 'standard'}
+                onChange={(e) => updateSetting('musicStyle', e.target.value)}
+                className="px-3 py-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm focus:outline-none focus:ring-2 focus:ring-yt-red/50 hover:border-yt-red/40"
+              >
+                <option value="standard">Standard</option>
+                <option value="apple">Apple Music</option>
               </select>
             </SettingRow>
 

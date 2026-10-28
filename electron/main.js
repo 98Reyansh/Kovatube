@@ -4001,6 +4001,7 @@ const SETTINGS_PATH = path.join(CONFIG_DIR, 'settings.json')
 
 const DEFAULT_SETTINGS = {
   theme: 'dark',
+  musicStyle: 'standard',
   accentColor: 'red',
   autoplay: true,
   defaultQuality: 'auto',
