@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ytStream: (videoId, quality) => ipcRenderer.invoke('yt-stream', videoId, quality),
   ytStreamStop: (videoId) => ipcRenderer.invoke('yt-stream-stop', videoId),
   ytPrewarm: (videoId) => ipcRenderer.invoke('yt-prewarm', videoId),
+  coverPalette: (url) => ipcRenderer.invoke('cover-palette', url),
   onStreamPhase: (cb) => { ipcRenderer.on('stream-phase', (_e, data) => cb(data)) },
   removeStreamPhaseListeners: () => { ipcRenderer.removeAllListeners('stream-phase') },
 
