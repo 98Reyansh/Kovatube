@@ -6,6 +6,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -13,11 +16,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            script: npm run electron:build:linux
+            script: npx electron-builder --linux --publish never
           - os: windows-latest
-            script: npm run electron:build:win
+            script: npx electron-builder --win --x64 --publish never
           - os: macos-latest
-            script: npm run electron:build:mac
+            script: npx electron-builder --mac --arm64 --x64 --publish never
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -26,11 +29,16 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - name: Build
+      - run: npm run build
+      - name: Package
+        shell: bash
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: ${{ matrix.script }}
+        run: |
+          if [ -z "${CSC_LINK}" ]; then unset CSC_LINK; fi
+          if [ -z "${CSC_KEY_PASSWORD}" ]; then unset CSC_KEY_PASSWORD; fi
+          ${{ matrix.script }}
       - uses: actions/upload-artifact@v4
         with:
           name: kovatube-${{ matrix.os }}
@@ -40,3 +48,41 @@ jobs:
             release/*.dmg
             release/*.zip
             release/*.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          pattern: kovatube-*
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="$(git describe --tags --abbrev=0)"
+          fi
+          VERSION="${TAG#v}"
+          mapfile -t files < <(find release-files -type f \( -name '*.AppImage' -o -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \))
+          notes=$(cat <<'EOF'
+          Linux AppImage, Windows installer, and macOS disk images and zip archives (Apple silicon and Intel).
+
+          This release turns the Linux GPU back on, loads Shorts faster with five videos kept ready, and adds a Material theme plus an Apple Music now-playing screen. Opening a song from its cover shows the full player, including ambient mode, and the background follows the cover colors.
+
+          yt-dlp and ffmpeg still need to be installed, unless you place them in the app bin folder. These macOS and Windows builds are unsigned, so Gatekeeper and SmartScreen warn the first time you open them.
+          EOF
+          )
+          notes="$(printf '%s\n' "$notes" | sed 's/^ \{10\}//')"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --title "Kovatube ${VERSION}" --notes "$notes"
+          fi
