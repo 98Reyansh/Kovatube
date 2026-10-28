@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQueue } from '../context/QueueContext'
 import { useSettings } from '../context/SettingsContext'
 import { useDownloads } from '../context/DownloadContext'
+import { useLikedSongs } from '../context/LikedSongsContext'
+import LikeButton from './music/LikeButton'
 import { pushMediaFocus, currentMediaFocus } from '../mediaFocus'
 
 const LYRIC_MOTIONS = [
@@ -483,6 +485,9 @@ function FullPlayer({
 
         <div className="text-center w-full max-w-xl">
           <p className="text-white font-bold text-lg sm:text-2xl truncate">{current.title}</p>
+          <div className="mt-1 flex justify-center">
+            <LikeButton videoId={current.videoId || current.id} className="text-white/80 hover:text-white" iconClass="w-5 h-5" />
+          </div>
           <p className="text-white/60 text-sm truncate">
             {current.artist || 'Unknown artist'}{source?.title ? ` • ${source.title}` : ''}
           </p>
@@ -545,10 +550,7 @@ export default function MiniPlayer() {
   const { settings, updateSetting } = useSettings()
   const { startDownload } = useDownloads()
   const apple = settings.musicStyle === 'apple'
-  const [likedIds, setLikedIds] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem('kovatube_liked_songs') || '[]')) }
-    catch { return new Set() }
-  })
+  const { liked: songIsLiked, toggle: toggleLike } = useLikedSongs()
   const lyricMotion = LYRIC_MOTIONS.some((item) => item.id === settings.lyricAnimation) ? settings.lyricAnimation : 'karaoke'
   const motionOff = !!settings.reduceMotion
   const playedMotion = motionOff ? 'still' : lyricMotion
@@ -863,17 +865,10 @@ export default function MiniPlayer() {
           setLyricMotion={setLyricMotion}
           motionOff={motionOff}
           apple={apple}
-          liked={!!(current && likedIds.has(current.videoId || current.id))}
+          liked={!!(current && songIsLiked(current.videoId || current.id))}
           onLike={() => {
             const id = current && (current.videoId || current.id)
-            if (!id) return
-            setLikedIds((prev) => {
-              const next = new Set(prev)
-              if (next.has(id)) next.delete(id)
-              else next.add(id)
-              try { localStorage.setItem('kovatube_liked_songs', JSON.stringify([...next])) } catch { /* ignore */ }
-              return next
-            })
+            if (id) toggleLike(id)
           }}
           wash={coverWash}
           onDownload={() => {
@@ -923,6 +918,7 @@ export default function MiniPlayer() {
             <p className="text-sm font-medium truncate">{current.title}</p>
             <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{current.artist || 'Unknown artist'}</p>
           </div>
+          <LikeButton videoId={current.videoId || current.id} />
 
           <div className="flex items-center gap-0.5">
             <Btn label="Shuffle" active={shuffle} onClick={() => setShuffle(s => !s)}>

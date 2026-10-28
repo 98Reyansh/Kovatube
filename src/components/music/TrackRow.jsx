@@ -1,4 +1,5 @@
 import { useQueue } from '../../context/QueueContext'
+import LikeButton from './LikeButton'
 
 function fmtDur(s) {
   if (!s) return ''
@@ -56,6 +57,8 @@ export default function TrackRow({ track, queue, sourceMeta = null, index, onRem
       {track.duration && (
         <span className="text-xs tabular-nums text-gray-400 shrink-0">{fmtDur(track.duration)}</span>
       )}
+
+      <LikeButton videoId={track.videoId} />
 
       {onRemove && (
         <button

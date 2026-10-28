@@ -37,12 +37,12 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 <img src="docs/screenshots/music-search.png" alt="Music search results" width="400">
 <img src="docs/screenshots/video-player.png" alt="Video player" width="400">
 
-**Now Playing** &nbsp;·&nbsp; **Ambient mode**
+**Apple Music now playing** &nbsp;·&nbsp; **Ambient mode**
 <br>
-<img src="docs/screenshots/now-playing.png" alt="Now Playing sheet" width="400">
+<img src="docs/screenshots/now-playing.png" alt="Apple Music now playing" width="400">
 <img src="docs/screenshots/ambient.png" alt="Ambient lyrics mode" width="400">
 
-**Ambient mode (mobile layout)**
+**Ambient mode (narrow layout)**
 <br>
 <img src="docs/screenshots/ambient-mobile.png" alt="Ambient mode, narrow layout" width="230">
 
@@ -64,7 +64,7 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 - Browse **songs, albums, artists, playlists** (and album/playlist detail pages).
 - **Audio player** with a **persistent mini-player** that keeps playing while you browse the rest of the app.
 - **Queue** with **shuffle**, **repeat** (all / one / off), **prev/next**, and **auto-advance**.
-- **Full-screen player** — a large cover-art view with a seek bar, the full transport and volume; toggle artwork/lyrics, or jump to ambient mode. Open it with `F` or the expand icon on the mini-player.
+- **Full-screen player** — a large cover-art view with a seek bar, the full transport and volume; toggle artwork/lyrics, or jump to ambient mode. The Apple Music look opens that screen when you click the cover, and `F` opens it from anywhere.
 - **Keyboard shortcuts** — `Space`/`K` play-pause, `J`/`L` ±10s, `←`/`→` ±5s, `↑`/`↓` volume, `M` mute, `N`/`P` next-previous, `S` shuffle, `R` repeat, `F` full screen, `A` ambient mode, `0–9` jump to %, `Home`/`End` start-end, `+`/`-` volume.
 - Music and video coordinate automatically so only one plays through the speakers at a time.
 

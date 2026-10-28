@@ -27,6 +27,7 @@ import { WatchLaterProvider } from './context/WatchLaterContext'
 import { ToastProvider } from './context/ToastContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { QueueProvider, useQueue } from './context/QueueContext'
+import { LikedSongsProvider } from './context/LikedSongsContext'
 import { NetworkProvider, useNetwork } from './context/NetworkContext'
 import MiniPlayer from './components/MiniPlayer'
 import OfflineGate from './components/OfflineGate'
@@ -144,11 +145,13 @@ function App() {
           <SavedProvider>
           <WatchLaterProvider>
           <SmartDownloadProvider>
+            <LikedSongsProvider>
             <QueueProvider>
               <Router>
                 <Layout />
               </Router>
             </QueueProvider>
+            </LikedSongsProvider>
           </SmartDownloadProvider>
           </WatchLaterProvider>
           </SavedProvider>

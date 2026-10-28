@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ytMusicBrowse: (browseId) => ipcRenderer.invoke('yt-music-browse', browseId),
   ytMusicMore: (continuation) => ipcRenderer.invoke('yt-music-more', continuation),
   ytMusicLibrary: () => ipcRenderer.invoke('yt-music-library'),
+  ytMusicLikedIds: () => ipcRenderer.invoke('yt-music-liked-ids'),
+  ytMusicRate: (args) => ipcRenderer.invoke('yt-music-rate', args),
   ytMusicLyrics: (args) => ipcRenderer.invoke('yt-music-lyrics', args),
   ytAudioStream: (videoId) => ipcRenderer.invoke('yt-audio-stream', videoId),
   ytAudioPrewarm: (videoId) => ipcRenderer.invoke('yt-audio-prewarm', videoId),

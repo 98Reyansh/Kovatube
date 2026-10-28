@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQueue } from '../../context/QueueContext'
+import LikeButton from './LikeButton'
 import { useDownloads } from '../../context/DownloadContext'
 import { isAudioDownload } from '../../lib/media'
 
@@ -126,6 +127,8 @@ function DownloadedRow({ track, queue, index, sourceMeta }) {
       {track.duration && (
         <span className="text-xs tabular-nums text-gray-400 shrink-0">{fmtDur(track.duration)}</span>
       )}
+
+      <LikeButton videoId={track.videoId} />
 
       <button
         onClick={(e) => { e.stopPropagation(); track.filePath && showInFolder(track.filePath) }}
