@@ -2673,9 +2673,15 @@ function musicBrowseResult(data) {
   const shelf = musicFirst(data, 'musicPlaylistShelfRenderer')
   const rows = shelf && Array.isArray(shelf.contents) ? shelf.contents
     : (musicFirst(data, 'musicShelfRenderer') || {}).contents
-  const tracks = (Array.isArray(rows) && rows.length ? rows : musicWalk(data, 'musicResponsiveListItemRenderer', [], 300))
+  let tracks = (Array.isArray(rows) && rows.length ? rows : musicWalk(data, 'musicResponsiveListItemRenderer', [], 300))
     .map(x => musicListItem(x.musicResponsiveListItemRenderer || x))
     .filter(t => t && t.videoId)
+  if (!tracks.length) {
+    tracks = [
+      ...musicWalk(data, 'playlistVideoRenderer', [], 300),
+      ...musicWalk(data, 'playlistPanelVideoRenderer', [], 300),
+    ].map(playlistVideoItem).filter(Boolean)
+  }
   const seen = new Set()
   const unique = tracks.filter(t => { if (seen.has(t.videoId)) return false; seen.add(t.videoId); return true })
   if (header && header.artist) {
@@ -2729,17 +2735,111 @@ async function musicSearch(query, filter) {
   return { items: unique, continuation: musicContinuation(j), error: null }
 }
 
+// Liked Music is a private auto-playlist. The library card uses one of these
+// browse ids; an anonymous request returns the page with no songs.
+const LIKED_BROWSE_IDS = ['FEmusic_liked_videos', 'VLLM']
+
+function isLikedBrowseId(browseId) {
+  return browseId === 'LM' || LIKED_BROWSE_IDS.includes(browseId)
+}
+
+function playlistVideoItem(node) {
+  if (!node || !node.videoId) return null
+  const title = musicText(node.title)
+  if (!title) return null
+  return {
+    kind: 'track',
+    id: node.videoId,
+    videoId: node.videoId,
+    browseId: '',
+    title,
+    artist: musicText(node.shortBylineText) || musicText(node.longBylineText),
+    album: '',
+    subtitle: musicText(node.shortBylineText),
+    duration: musicText(node.lengthText),
+    thumbnail: musicThumb(node),
+  }
+}
+
+// Private library pages (Liked Music, your playlists) only include their songs
+// when the request carries the signed-in session. Public pages still work
+// without it.
+async function musicBrowsePost(body) {
+  if (musicSignedIn()) {
+    try {
+      const j = await authedMusicBrowse(body)
+      if (j) return j
+    } catch (e) {
+      console.error('[Music] signed-in browse failed:', e.message)
+    }
+  }
+  return musicPost('browse', body)
+}
+
 async function musicBrowse(browseId) {
   if (!browseId) return { header: null, tracks: [], continuation: '', error: 'Missing browse id' }
-  const j = await musicPost('browse', { browseId })
-  return { ...musicBrowseResult(j), error: null }
+  const id = browseId === 'LM' ? 'VLLM' : browseId
+  const j = await musicBrowsePost({ browseId: id })
+  let result = { ...musicBrowseResult(j), error: null }
+  if (!result.tracks.length && isLikedBrowseId(id)) {
+    for (const alt of LIKED_BROWSE_IDS) {
+      if (alt === id) continue
+      const altJson = await musicBrowsePost({ browseId: alt })
+      const altResult = musicBrowseResult(altJson)
+      if (altResult.tracks.length) {
+        result = { ...altResult, error: null }
+        break
+      }
+    }
+  }
+  return result
 }
 
 async function musicBrowseMore(continuation) {
   if (!continuation) return { tracks: [], continuation: '', error: null }
-  const j = await musicPost('browse', { continuation })
+  const j = await musicBrowsePost({ continuation })
   // Continuation responses may nest under continuationContents.
   return { ...musicBrowseResult(j), error: null }
+}
+
+let likedSongCache = { ts: 0, ids: null }
+
+async function getLikedSongIds() {
+  if (!musicSignedIn()) return []
+  if (likedSongCache.ids && Date.now() - likedSongCache.ts < 60 * 1000) return likedSongCache.ids
+  const page = await musicBrowse('FEmusic_liked_videos')
+  const ids = []
+  const push = (list) => { for (const t of list || []) if (t.videoId) ids.push(t.videoId) }
+  push(page.tracks)
+  let continuation = page.continuation
+  for (let i = 0; continuation && i < 8 && ids.length < 400; i++) {
+    const more = await musicBrowseMore(continuation)
+    push(more.tracks)
+    if (!more.continuation || more.continuation === continuation) break
+    continuation = more.continuation
+  }
+  const unique = [...new Set(ids)]
+  likedSongCache = { ts: Date.now(), ids: unique }
+  return unique
+}
+
+function rememberLikedSong(videoId, like) {
+  if (!likedSongCache.ids || !videoId) return
+  const next = new Set(likedSongCache.ids)
+  if (like) next.add(videoId)
+  else next.delete(videoId)
+  likedSongCache = { ts: Date.now(), ids: [...next] }
+}
+
+// Thumbs-up on YouTube Music writes the song into the Liked Music playlist.
+async function rateMusicSong(videoId, like) {
+  if (!videoId) return { ok: false, reason: 'No song' }
+  if (!musicSignedIn()) return { ok: false, reason: 'Sign in to add songs to Liked Music' }
+  const endpoint = like ? 'like/like' : 'like/removelike'
+  const res = await authedMusicRequest(endpoint, { target: { videoId } })
+  if (!res || !res.ok) return { ok: false, reason: 'Could not update Liked Music' }
+  rememberLikedSong(videoId, like)
+  return { ok: true, liked: !!like }
 }
 
 // ── Lyrics ──────────────────────────────────────────────────────────────────
@@ -3460,7 +3560,8 @@ function destroyMusicAuthedWindow() {
 // Run a music browse inside the music.youtube.com page so Chromium attaches the
 // account cookies, and add the SAPISIDHASH authorization the WEB_REMIX innertube
 // expects for signed-in calls (cookies alone are treated as anonymous here).
-async function authedMusicBrowse(body) {
+async function authedMusicRequest(endpoint, body) {
+  const safeEndpoint = /^(browse|like\/like|like\/removelike)$/.test(endpoint) ? endpoint : 'browse'
   const win = await ensureMusicAuthedWindow()
   let sapisid = auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-1PAPISID'] || ''
   // The SAPISID signs the request; without it WEB_REMIX treats us as anonymous
@@ -3495,7 +3596,7 @@ async function authedMusicBrowse(body) {
             'X-Goog-AuthUser': '0',
           }
         }
-        const res = await fetch(${JSON.stringify(YOUTUBE_MUSIC_BASE + '/browse?prettyPrint=false')} + '&key=' + encodeURIComponent(apiKey), {
+        const res = await fetch(${JSON.stringify(YOUTUBE_MUSIC_BASE + '/')} + ${JSON.stringify(safeEndpoint)} + '?prettyPrint=false&key=' + encodeURIComponent(apiKey), {
           method: 'POST',
           headers: Object.assign({
             'Content-Type': 'application/json',
@@ -3517,7 +3618,15 @@ async function authedMusicBrowse(body) {
     console.error('[MusicAuth] executeJavaScript error:', err.message)
     return { ok: false, status: 0, text: '' }
   })
-  try { return JSON.parse((result && result.text) || '') } catch (e) { return null }
+  let data = null
+  const text = (result && result.text) || ''
+  if (text) { try { data = JSON.parse(text) } catch (e) { data = null } }
+  return { ok: !!(result && result.ok), status: result && result.status, data }
+}
+
+async function authedMusicBrowse(body) {
+  const res = await authedMusicRequest('browse', body)
+  return res && res.data
 }
 
 function musicSignedIn() {
@@ -5991,6 +6100,17 @@ function setupIPC() {
   ipcMain.handle('yt-music-library', async () => {
     console.log('[IPC] yt-music-library')
     try { return await getMusicLibrary() } catch (e) { console.error('[Music] library', e.message); return { signedIn: false, shelves: [], items: [], error: e.message } }
+  })
+
+  ipcMain.handle('yt-music-liked-ids', async () => {
+    try { return await getLikedSongIds() } catch (e) { console.error('[Music] liked ids', e.message); return [] }
+  })
+
+  ipcMain.handle('yt-music-rate', async (_e, args) => {
+    const videoId = args && args.videoId
+    const like = !!(args && args.like)
+    console.log('[IPC] yt-music-rate:', videoId, like ? 'like' : 'unlike')
+    try { return await rateMusicSong(videoId, like) } catch (e) { console.error('[Music] rate', e.message); return { ok: false, reason: e.message } }
   })
 
   ipcMain.handle('yt-music-lyrics', async (_e, args) => {
