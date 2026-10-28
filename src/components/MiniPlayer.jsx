@@ -4,6 +4,8 @@ import { useSettings } from '../context/SettingsContext'
 import { useDownloads } from '../context/DownloadContext'
 import { useLikedSongs } from '../context/LikedSongsContext'
 import LikeButton from './music/LikeButton'
+import BraccatoLyrics from './music/BraccatoLyrics'
+import CoverShader from './music/CoverShader'
 import { pushMediaFocus, currentMediaFocus } from '../mediaFocus'
 
 const LYRIC_MOTIONS = [
@@ -39,6 +41,23 @@ const Icon = {
   volume: <path d="M3 10v4h4l5 5V5L7 10H3zm13.5 2A4.5 4.5 0 0014 7.97v8.05A4.47 4.47 0 0016.5 12z" />,
   mute: <path d="M3 10v4h4l5 5V5L7 10H3zm18.5-1.5l-1.5 1.5 1.5 1.5-1 1L19 11l-1.5 1.5-1-1L18 10l-1.5-1.5 1-1L19 9l1.5-1.5z" />,
   chevron: <path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z" />,
+}
+
+function CoverArt({ src, className = '' }) {
+  return (
+    <span className={`group/cover relative block shrink-0 overflow-hidden ${className}`}>
+      {src ? (
+        <img src={src} alt="" referrerPolicy="no-referrer" className="h-full w-full object-cover" />
+      ) : (
+        <span className="block h-full w-full bg-black/10 dark:bg-white/10" />
+      )}
+      <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/50 text-white opacity-0 transition-opacity group-hover/cover:opacity-100">
+        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden>
+          <path d="M6 14l6-6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+    </span>
+  )
 }
 
 function Btn({ name, children, onClick, active, label, className = '', tone = 'default' }) {
@@ -282,6 +301,79 @@ function SyncControl({ offset, onChange, ambient }) {
 // with elapsed/total time, the whole transport, and volume. Opened from the
 // sheet's maximise button or with `F`; the close button or Esc dismisses it.
 // It reuses the ambient styling so both dark, immersive views stay in step.
+function PlayerBackdrop({ thumbnail, wash, shader, audio, playing, blur }) {
+  const scrim = wash ? 'from-black/20 via-black/35 to-black/55' : 'from-black/40 via-black/55 to-black/85'
+  return (
+    <>
+      {shader && thumbnail ? (
+        <CoverShader url={thumbnail} audio={audio} playing={playing} />
+      ) : null}
+      {!shader && blur && thumbnail ? (
+        <img
+          src={thumbnail}
+          alt=""
+          referrerPolicy="no-referrer"
+          className={`ambient-img absolute inset-0 w-full h-full object-cover scale-125 blur-3xl ${wash ? 'opacity-30' : 'opacity-50'}`}
+        />
+      ) : null}
+      {!shader && blur && !thumbnail ? <div className="absolute inset-0 bg-neutral-900" /> : null}
+      {(shader || blur) ? (
+        <div className={`absolute inset-0 pointer-events-none bg-gradient-to-b ${scrim}`} />
+      ) : null}
+    </>
+  )
+}
+
+function LyricBody({ showLyrics, currentTime, getTime, offset, onSeek, animation, audio, duration, still }) {
+  if (!showLyrics || showLyrics.loading) {
+    return (
+      <div className="h-full flex items-center justify-center gap-2 text-sm text-white/60">
+        <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin text-yt-red" fill="none">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
+          <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        </svg>
+        Loading lyrics…
+      </div>
+    )
+  }
+  const rich = !!(showLyrics.ok && ((showLyrics.ttml) || (showLyrics.synced && showLyrics.synced.length)))
+  if (rich) {
+    return (
+      <BraccatoLyrics
+        ttml={showLyrics.ttml || ''}
+        lines={showLyrics.synced}
+        durationMs={Math.round((duration || 0) * 1000)}
+        offset={offset}
+        audio={audio}
+        onSeek={onSeek}
+        still={still}
+        footer={showLyrics.footer}
+      />
+    )
+  }
+  if (showLyrics.ok) {
+    return (
+      <LyricsView
+        ambient
+        synced={showLyrics.synced}
+        plain={showLyrics.text}
+        footer={showLyrics.footer}
+        currentTime={currentTime}
+        getTime={getTime}
+        offset={offset}
+        onSeek={onSeek}
+        animation={animation}
+      />
+    )
+  }
+  return (
+    <div className="h-full flex flex-col items-center justify-center text-center gap-2 text-white/50">
+      <svg viewBox="0 0 24 24" className="w-8 h-8" fill="currentColor"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" /></svg>
+      <p className="text-sm">{showLyrics.reason || 'Lyrics not available'}</p>
+    </div>
+  )
+}
+
 function FullPlayer({
   current, source, playing, loading,
   currentTime, duration, volume, shuffle, repeat,
@@ -290,6 +382,7 @@ function FullPlayer({
   showLyrics, hasSynced, getTime, lyricOffset, setLyricOffset,
   lyricMotion, setLyricMotion, motionOff,
   apple, liked, onLike, onDownload, wash,
+  shader, audio, onToggleShader,
 }) {
   const pct = duration ? (currentTime / duration) * 100 : 0
   const tabCls = (on) => `px-3.5 py-1 rounded-full text-xs font-medium transition-colors ${on ? 'bg-white text-gray-900 shadow-sm' : 'text-white/70 hover:text-white hover:bg-white/10'}`
@@ -305,33 +398,18 @@ function FullPlayer({
       <div className={`${apple ? 'w-[min(72vw,440px)] aspect-square' : 'w-44 h-44 sm:w-64 sm:h-64 md:w-80 md:h-80'} rounded-2xl bg-white/10`} />
     )
   ) : (
-    <div className={`w-full min-h-0 ${apple ? 'h-64 sm:h-80' : 'flex-1 max-w-2xl'}`}>
-      {(!showLyrics || showLyrics.loading) ? (
-        <div className="h-full flex items-center justify-center gap-2 text-sm text-white/60">
-          <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin text-yt-red" fill="none">
-            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
-            <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-          </svg>
-          Loading lyrics…
-        </div>
-      ) : showLyrics.ok ? (
-        <LyricsView
-          ambient
-          synced={showLyrics.synced}
-          plain={showLyrics.text}
-          footer={showLyrics.footer}
-          currentTime={currentTime}
-          getTime={getTime}
-          offset={lyricOffset}
-          onSeek={seek}
-          animation={motionOff ? 'still' : lyricMotion}
-        />
-      ) : (
-        <div className="h-full flex flex-col items-center justify-center text-center gap-2 text-white/50">
-          <svg viewBox="0 0 24 24" className="w-8 h-8" fill="currentColor"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" /></svg>
-          <p className="text-sm">{showLyrics.reason || 'Lyrics not available'}</p>
-        </div>
-      )}
+    <div className={`w-full min-h-0 overflow-hidden ${apple ? (view === 'lyrics' ? 'flex-1' : '') : 'flex-1 max-w-2xl'}`}>
+      <LyricBody
+        showLyrics={showLyrics}
+        currentTime={currentTime}
+        getTime={getTime}
+        offset={lyricOffset}
+        onSeek={seek}
+        animation={motionOff ? 'still' : lyricMotion}
+        audio={audio}
+        duration={duration}
+        still={motionOff}
+      />
     </div>
   )
   const optionRow = (
@@ -347,6 +425,7 @@ function FullPlayer({
       <Btn label={`Repeat: ${repeat}`} tone="onDark" active={repeat !== 'off'} onClick={cycleRepeat}>
         <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{repeat === 'one' ? Icon.repeatOne : Icon.repeat}</svg>
       </Btn>
+      <button type="button" onClick={onToggleShader} aria-pressed={!!shader} className={`h-8 px-3 rounded-full text-xs font-medium transition-colors ${shader ? 'bg-white text-gray-900' : 'bg-white/10 text-white/70 hover:text-white'}`}>Shader</button>
       <div className="hidden sm:flex items-center gap-2">
         <Btn label={volume === 0 ? 'Unmute' : 'Mute'} tone="onDark" onClick={() => setVolume(volume === 0 ? 1 : 0)}>
           <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{volume === 0 ? Icon.mute : Icon.volume}</svg>
@@ -364,6 +443,7 @@ function FullPlayer({
   if (apple) {
     return (
       <div className="np-apple fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in text-white" style={coverWashStyle(wash)}>
+        <PlayerBackdrop thumbnail={current.thumbnail} wash={wash} shader={shader} audio={audio} playing={playing} blur={false} />
         <div className="relative z-10 flex items-center px-4 sm:px-6 pt-4 pb-2">
           <button onClick={onClose} aria-label="Close full screen player" title="Close (Esc)" className="w-10 h-10 rounded-full flex items-center justify-center text-white/80 hover:bg-white/10">
             <svg viewBox="0 0 24 24" className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -373,7 +453,7 @@ function FullPlayer({
             <p className="text-[11px] text-white/60 truncate">{source?.title || current.artist || 'Music'}</p>
           </div>
         </div>
-        <div className="relative z-10 flex-1 min-h-0 flex flex-col items-center justify-center px-6 gap-5 w-full max-w-xl mx-auto">
+        <div className={`relative z-10 flex-1 min-h-0 flex flex-col items-center px-6 gap-4 w-full max-w-xl mx-auto ${view === 'lyrics' ? 'justify-start' : 'justify-center'}`}>
           {artBlock}
           <div className="w-full">
             <div className="flex items-start gap-3">
@@ -406,7 +486,6 @@ function FullPlayer({
         {view === 'lyrics' && hasSynced && (
           <div className="relative z-10 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pb-1">
             <SyncControl offset={lyricOffset} onChange={setLyricOffset} ambient />
-            <LyricMotion value={lyricMotion} onChange={setLyricMotion} disabled={motionOff} ambient />
           </div>
         )}
         <div className="relative z-10 px-6 pb-7 pt-2 w-full max-w-xl mx-auto">
@@ -436,17 +515,7 @@ function FullPlayer({
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in" style={coverWashStyle(wash)}>
-      {current.thumbnail ? (
-        <img
-          src={current.thumbnail}
-          alt=""
-          referrerPolicy="no-referrer"
-          className={`ambient-img absolute inset-0 w-full h-full object-cover scale-125 blur-3xl ${wash ? 'opacity-30' : 'opacity-50'}`}
-        />
-      ) : (
-        <div className="absolute inset-0 bg-neutral-900" />
-      )}
-      <div className={`absolute inset-0 bg-gradient-to-b ${wash ? 'from-black/10 via-black/20 to-black/40' : 'from-black/40 via-black/55 to-black/85'}`} />
+      <PlayerBackdrop thumbnail={current.thumbnail} wash={wash} shader={shader} audio={audio} playing={playing} blur />
 
       {/* Top bar */}
       <div className="relative z-10 flex items-center justify-between px-4 sm:px-6 py-3">
@@ -497,7 +566,6 @@ function FullPlayer({
       {view === 'lyrics' && hasSynced && (
         <div className="relative z-10 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pb-1">
           <SyncControl offset={lyricOffset} onChange={setLyricOffset} ambient />
-          <LyricMotion value={lyricMotion} onChange={setLyricMotion} disabled={motionOff} ambient />
         </div>
       )}
 
@@ -559,8 +627,10 @@ export default function MiniPlayer() {
     current, source, playing, loading,
     currentTime, duration, volume, shuffle, repeat,
     toggle, next, prev, seek, setVolume, setShuffle, setRepeat, clear,
-    getAudioTime,
+    getAudioTime, getAudioElement,
   } = useQueue()
+  const shaderOn = settings.lyricShader !== false && !motionOff
+  const audioEl = getAudioElement()
   const [view, setView] = useState('art') // 'art' | 'lyrics'
   const [ambient, setAmbient] = useState(false)
   const [full, setFull] = useState(false) // full-screen "Now playing" player
@@ -582,10 +652,12 @@ export default function MiniPlayer() {
 
   // Fetch lyrics on demand (when the Lyrics tab or ambient mode is open),
   // cached per track so flipping back and forth never refetches.
+  const lyricDur = Math.round(duration || 0)
   useEffect(() => {
     const id = trackKey
-    if ((view !== 'lyrics' && !ambient) || !id) return
-    const cached = lyricsCache.current.get(id)
+    if ((view !== 'lyrics' && !ambient && !full) || !id) return
+    const cacheId = `${id}|${lyricDur}`
+    const cached = lyricsCache.current.get(cacheId)
     if (cached) { setLyrics(cached); return }
     let alive = true
     setLyrics({ forId: id, loading: true })
@@ -594,28 +666,31 @@ export default function MiniPlayer() {
       filePath: current && current.filePath,
       title: current && current.title,
       artist: current && current.artist,
-      duration: Math.round(duration || 0),
+      album: (current && current.album) || '',
+      duration: lyricDur,
     }))
       .then((r) => {
         const synced = (r && Array.isArray(r.synced) && r.synced.length) ? r.synced : null
+        const ttml = (r && r.ttml) || ''
         const entry = {
           forId: id,
           loading: false,
-          ok: !!(r && r.ok) || !!synced,
+          ok: !!(r && r.ok) || !!synced || !!ttml,
           text: (r && r.lyrics) || '',
           reason: (r && r.reason) || 'Lyrics unavailable',
           footer: (r && r.footer) || '',
-          syncType: (r && r.syncType) || (synced ? 'line' : null),
+          syncType: (r && r.syncType) || (synced || ttml ? 'line' : null),
           source: (r && r.source) || '',
           synced,
+          ttml,
         }
-        lyricsCache.current.set(id, entry)
+        lyricsCache.current.set(cacheId, entry)
         if (alive) setLyrics(entry)
       })
       .catch(() => { if (alive) setLyrics({ forId: id, loading: false, ok: false, reason: 'Could not load lyrics', footer: '' }) })
     return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, ambient, trackKey])
+  }, [view, ambient, full, trackKey, lyricDur])
 
   useEffect(() => {
     const url = current && current.thumbnail
@@ -691,24 +766,14 @@ export default function MiniPlayer() {
   const pct = duration ? (currentTime / duration) * 100 : 0
   const cycleRepeat = () => setRepeat(repeat === 'off' ? 'all' : repeat === 'all' ? 'one' : 'off')
   const showLyrics = lyrics && lyrics.forId === trackKey ? lyrics : null
-  const hasSynced = !!(showLyrics && showLyrics.ok && showLyrics.synced && showLyrics.synced.length)
+  const hasSynced = !!(showLyrics && showLyrics.ok && ((showLyrics.synced && showLyrics.synced.length) || showLyrics.ttml))
 
   return (
     <>
       {/* Ambient mode: full-screen cover art + lyrics over a blurred backdrop */}
       {ambient && (
         <div className="fixed inset-0 z-[70] flex flex-col overflow-hidden animate-fade-in" style={coverWashStyle(coverWash)}>
-          {current.thumbnail ? (
-            <img
-              src={current.thumbnail}
-              alt=""
-              referrerPolicy="no-referrer"
-              className={`ambient-img absolute inset-0 w-full h-full object-cover scale-125 blur-3xl ${coverWash ? 'opacity-30' : 'opacity-50'}`}
-            />
-          ) : (
-            <div className="absolute inset-0 bg-neutral-900" />
-          )}
-          <div className={`absolute inset-0 bg-gradient-to-b ${coverWash ? 'from-black/10 via-black/20 to-black/40' : 'from-black/40 via-black/55 to-black/85'}`} />
+          <PlayerBackdrop thumbnail={current.thumbnail} wash={coverWash} shader={shaderOn} audio={audioEl} playing={playing} blur />
 
           {/* Top bar */}
           <div className="relative z-10 flex items-center justify-between px-4 sm:px-6 py-3">
@@ -748,42 +813,25 @@ export default function MiniPlayer() {
               </div>
             </div>
 
-            <div className="flex-1 min-h-0 w-full h-full max-w-2xl">
-              {(!showLyrics || showLyrics.loading) ? (
-                <div className="h-full flex items-center justify-center gap-2 text-sm text-white/60">
-                  <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin text-yt-red" fill="none">
-                    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
-                    <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                  </svg>
-                  Loading lyrics…
-                </div>
-              ) : showLyrics.ok ? (
-                <LyricsView
-                  ambient
-                  synced={showLyrics.synced}
-                  plain={showLyrics.text}
-                  footer={showLyrics.footer}
-                  currentTime={currentTime}
-                  getTime={getAudioTime}
-                  offset={lyricOffset}
-                  onSeek={seek}
-                  animation={playedMotion}
-                />
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center text-center gap-2 text-white/50">
-                  <svg viewBox="0 0 24 24" className="w-8 h-8" fill="currentColor">
-                    <path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" />
-                  </svg>
-                  <p className="text-sm">{showLyrics.reason || 'Lyrics not available'}</p>
-                </div>
-              )}
+            <div className="flex-1 min-h-0 w-full h-full max-w-2xl overflow-hidden">
+              <LyricBody
+                showLyrics={showLyrics}
+                currentTime={currentTime}
+                getTime={getAudioTime}
+                offset={lyricOffset}
+                onSeek={seek}
+                animation={playedMotion}
+                audio={audioEl}
+                duration={duration}
+                still={motionOff}
+              />
             </div>
           </div>
 
           {hasSynced && (
             <div className="relative z-10 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pb-1">
               <SyncControl offset={lyricOffset} onChange={setLyricOffset} ambient />
-              <LyricMotion value={lyricMotion} onChange={setLyricMotion} disabled={motionOff} ambient />
+              <button type="button" onClick={() => updateSetting('lyricShader', !shaderOn)} aria-pressed={shaderOn} className={`h-8 px-3 rounded-full text-xs font-medium transition-colors ${shaderOn ? 'bg-white text-gray-900' : 'bg-white/10 text-white/70 hover:text-white'}`}>Shader</button>
             </div>
           )}
 
@@ -834,7 +882,7 @@ export default function MiniPlayer() {
         </div>
       )}
 
-      {full && (
+      {full && !ambient && (
         <FullPlayer
           current={current}
           source={source}
@@ -871,6 +919,9 @@ export default function MiniPlayer() {
             if (id) toggleLike(id)
           }}
           wash={coverWash}
+          shader={shaderOn}
+          audio={audioEl}
+          onToggleShader={() => updateSetting('lyricShader', !shaderOn)}
           onDownload={() => {
             const id = current && (current.videoId || current.id)
             if (!id) return
@@ -886,100 +937,155 @@ export default function MiniPlayer() {
         />
       )}
 
-      <div className="fixed bottom-0 left-0 right-0 z-40 animate-fade-in-up">
-      <div className="miniplayer relative">
-
-        {/* Seek line */}
-        <div className="absolute top-0 left-0 right-0 h-1 bg-black/5 dark:bg-white/5 group cursor-pointer"
+      {settings.playerBar === 'full' ? (
+      <div className="miniplayer-full fixed bottom-0 left-0 right-0 z-40 flex h-16 items-center gap-3 px-3 animate-fade-in-up">
+        <div
+          className="absolute top-0 left-0 right-0 h-1 cursor-pointer bg-black/5 dark:bg-white/5"
           onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect()
             if (duration) seek(((e.clientX - rect.left) / rect.width) * duration)
           }}
         >
-          <div className="h-full bg-yt-red transition-[width] duration-150" style={{ width: `${pct}%` }} />
+          <div className="h-full bg-yt-red" style={{ width: `${pct}%` }} />
         </div>
-
-        <div className="flex items-center gap-3 px-3 pt-2 pb-2">
+        <button
+          type="button"
+          onClick={() => setFull(true)}
+          aria-label="Open full screen player"
+          title="Full screen"
+          className="shrink-0"
+        >
+          <CoverArt src={current.thumbnail} className="h-11 w-11 rounded-lg" />
+        </button>
+        <div className="min-w-0 w-[28%] sm:w-[22%]">
+          <p className="text-sm font-medium truncate">{current.title}</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{current.artist || 'Unknown artist'}</p>
+        </div>
+        <LikeButton videoId={current.videoId || current.id} />
+        <div className="flex items-center gap-0.5">
+          <Btn label="Shuffle" active={shuffle} onClick={() => setShuffle(s => !s)}>
+            <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{Icon.shuffle}</svg>
+          </Btn>
+          <Btn label="Previous" onClick={prev}>
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{Icon.prev}</svg>
+          </Btn>
           <button
-            type="button"
-            onClick={() => setFull(true)}
-            aria-label="Open full screen player"
-            title="Full screen"
-            className="w-11 h-11 rounded-lg overflow-hidden shrink-0"
+            onClick={toggle}
+            aria-label={playing ? 'Pause' : 'Play'}
+            className="flex items-center justify-center w-9 h-9 rounded-full bg-yt-red text-white hover:bg-yt-red-hover transition-transform hover:scale-105 active:scale-95"
           >
-            {current.thumbnail ? (
-              <img src={current.thumbnail} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+            {loading ? (
+              <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin" fill="none">
+                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
+                <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+              </svg>
             ) : (
-              <span className="block w-full h-full bg-black/10 dark:bg-white/10" />
+              <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{playing ? Icon.pause : Icon.play}</svg>
             )}
           </button>
-
-          <div className="min-w-0 w-[28%] sm:w-[22%]">
-            <p className="text-sm font-medium truncate">{current.title}</p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{current.artist || 'Unknown artist'}</p>
-          </div>
-          <LikeButton videoId={current.videoId || current.id} />
-
-          <div className="flex items-center gap-0.5">
-            <Btn label="Shuffle" active={shuffle} onClick={() => setShuffle(s => !s)}>
-              <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{Icon.shuffle}</svg>
-            </Btn>
-            <Btn label="Previous" onClick={prev}>
-              <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{Icon.prev}</svg>
-            </Btn>
-            <button
-              onClick={toggle}
-              aria-label={playing ? 'Pause' : 'Play'}
-              className="flex items-center justify-center w-9 h-9 rounded-full bg-yt-red text-white hover:bg-yt-red-hover transition-transform hover:scale-105 active:scale-95"
-            >
-              {loading ? (
-                <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin" fill="none">
-                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
-                  <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{playing ? Icon.pause : Icon.play}</svg>
-              )}
-            </button>
-            <Btn label="Next" onClick={() => next(false)}>
-              <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{Icon.next}</svg>
-            </Btn>
-            <Btn label={`Repeat: ${repeat}`} active={repeat !== 'off'} onClick={cycleRepeat}>
-              <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{repeat === 'one' ? Icon.repeatOne : Icon.repeat}</svg>
-            </Btn>
-          </div>
-
-          <div className="ml-auto hidden md:flex items-center gap-3">
-            <span className="text-xs tabular-nums text-gray-500 dark:text-gray-400">{fmt(currentTime)} / {fmt(duration)}</span>
-            <Btn label={volume === 0 ? 'Unmute' : 'Mute'} onClick={() => setVolume(volume === 0 ? 1 : 0)}>
-              <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{volume === 0 ? Icon.mute : Icon.volume}</svg>
-            </Btn>
-            <input
-              type="range" min="0" max="1" step="0.01" value={volume}
-              onChange={(e) => setVolume(parseFloat(e.target.value))}
-              className="range-minimal w-20"
-              aria-label="Volume"
-            />
-          </div>
-
-          <Btn label="Close player" onClick={clear} className="ml-1">
-            <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
-            </svg>
+          <Btn label="Next" onClick={() => next(false)}>
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{Icon.next}</svg>
+          </Btn>
+          <Btn label={`Repeat: ${repeat}`} active={repeat !== 'off'} onClick={cycleRepeat}>
+            <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{repeat === 'one' ? Icon.repeatOne : Icon.repeat}</svg>
           </Btn>
         </div>
-
-        {/* Seek range on mobile (full width under the controls) */}
-        <div className="md:hidden px-3 pb-2">
+        <div className="ml-auto hidden md:flex items-center gap-3">
+          <span className="text-xs tabular-nums text-gray-500 dark:text-gray-400">{fmt(currentTime)} / {fmt(duration)}</span>
+          <Btn label={volume === 0 ? 'Unmute' : 'Mute'} onClick={() => setVolume(volume === 0 ? 1 : 0)}>
+            <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{volume === 0 ? Icon.mute : Icon.volume}</svg>
+          </Btn>
           <input
-            type="range" min="0" max={duration || 0} step="0.1" value={currentTime}
-            onChange={(e) => seek(parseFloat(e.target.value))}
-            className="range-minimal w-full"
-            aria-label="Seek"
+            type="range" min="0" max="1" step="0.01" value={volume}
+            onChange={(e) => setVolume(parseFloat(e.target.value))}
+            className="range-minimal w-20"
+            aria-label="Volume"
+          />
+        </div>
+        <Btn label="Close player" onClick={clear}>
+          <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+          </svg>
+        </Btn>
+      </div>
+      ) : (
+      <div className={`fixed bottom-4 z-40 flex justify-center pointer-events-none animate-fade-in-up ${settings.navPosition === 'top' ? 'inset-x-0' : 'left-[248px] right-0'}`}>
+      <div className="miniplayer pointer-events-auto relative mx-4 flex h-14 w-full max-w-3xl items-center gap-1 rounded-full px-2">
+
+        <div
+          className="absolute bottom-0 left-8 right-8 h-3 cursor-pointer"
+          onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect()
+            if (duration) seek(((e.clientX - rect.left) / rect.width) * duration)
+          }}
+          aria-hidden
+        >
+          <div className="absolute bottom-1.5 left-0 right-0 h-[3px] rounded-full bg-black/10 dark:bg-white/15">
+            <div className="h-full rounded-full bg-yt-red" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+
+        <Btn label="Close player" onClick={clear}>
+          <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
+          </svg>
+        </Btn>
+        <Btn label="Previous" onClick={prev}>
+          <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{Icon.prev}</svg>
+        </Btn>
+        <button
+          onClick={toggle}
+          aria-label={playing ? 'Pause' : 'Play'}
+          className="flex items-center justify-center w-9 h-9 rounded-full bg-yt-red text-white hover:bg-yt-red-hover transition-transform hover:scale-105 active:scale-95 shrink-0"
+        >
+          {loading ? (
+            <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
+              <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{playing ? Icon.pause : Icon.play}</svg>
+          )}
+        </button>
+        <Btn label="Next" onClick={() => next(false)}>
+          <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{Icon.next}</svg>
+        </Btn>
+
+        <button
+          type="button"
+          onClick={() => setFull(true)}
+          aria-label="Open full screen player"
+          title="Full screen"
+          className="flex items-center gap-2.5 min-w-0 flex-1 px-2 text-left"
+        >
+          <CoverArt src={current.thumbnail} className="h-9 w-9 rounded-md" />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium truncate">{current.title}</span>
+            <span className="block text-xs text-gray-500 dark:text-gray-400 truncate">{current.artist || 'Unknown artist'}</span>
+          </span>
+        </button>
+
+        <LikeButton videoId={current.videoId || current.id} />
+        <Btn label="Shuffle" active={shuffle} onClick={() => setShuffle(s => !s)} className="hidden sm:flex">
+          <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{Icon.shuffle}</svg>
+        </Btn>
+        <Btn label={`Repeat: ${repeat}`} active={repeat !== 'off'} onClick={cycleRepeat} className="hidden sm:flex">
+          <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{repeat === 'one' ? Icon.repeatOne : Icon.repeat}</svg>
+        </Btn>
+        <div className="hidden md:flex items-center">
+          <Btn label={volume === 0 ? 'Unmute' : 'Mute'} onClick={() => setVolume(volume === 0 ? 1 : 0)}>
+            <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{volume === 0 ? Icon.mute : Icon.volume}</svg>
+          </Btn>
+          <input
+            type="range" min="0" max="1" step="0.01" value={volume}
+            onChange={(e) => setVolume(parseFloat(e.target.value))}
+            className="range-minimal w-16"
+            aria-label="Volume"
           />
         </div>
       </div>
       </div>
+      )}
     </>
   )
 }

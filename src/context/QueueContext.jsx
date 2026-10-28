@@ -214,6 +214,8 @@ export function QueueProvider({ children }) {
     return audio ? audio.currentTime || 0 : 0
   }, [])
 
+  const getAudioElement = useCallback(() => audioRef.current, [])
+
   const stop = useCallback(() => {
     const audio = audioRef.current
     if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load() }
@@ -362,7 +364,7 @@ export function QueueProvider({ children }) {
     currentTime, duration, volume, shuffle, repeat,
     startQueue, playAt, playNextOf, appendToQueue,
     toggle, next, prev, seek, setVolume, stop, clear,
-    setShuffle, setRepeat, getAudioTime,
+    setShuffle, setRepeat, getAudioTime, getAudioElement,
     isCurrent: (id) => trackId(current) === id,
   }
 

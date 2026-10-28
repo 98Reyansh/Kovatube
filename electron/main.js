@@ -2591,7 +2591,9 @@ function musicListItem(item) {
 
   // Leading metadata that isn't a person/album (play counts, views).
   const isStat = (s) => /^[\d.,]+[KMB]? (plays|views|subscribers|songs|likes|monthly listeners)$/i.test(s)
-  const content = meta.filter(p => p !== duration && !isStat(p))
+  // YouTube Music puts the row type ("Song", "Video") in its own column.
+  const isTypeLabel = (s) => /^(song|video|album|single|ep|playlist|artist|podcast)$/i.test(s)
+  const content = meta.filter(p => p !== duration && !isStat(p) && !isTypeLabel(p))
 
   return {
     kind,
@@ -3223,35 +3225,98 @@ async function getYtMusicLyrics(videoId) {
   return { ok: false, reason: (message && musicText(message.text)) || 'Lyrics not available' }
 }
 
+// Better Lyrics hosts syllable-level TTML. Cached songs need no key; the
+// request has to carry the title or artist, and a duration when we have one.
+async function getBetterLyrics(track, artist, album, duration) {
+  const name = cleanTrackName(track)
+  const by = cleanArtistName(artist)
+  if (!name && !by) return null
+  const dur = durationToSeconds(duration)
+  const params = new URLSearchParams()
+  if (name) params.set('s', name)
+  if (by) params.set('a', by)
+  const albumName = String(album || '').replace(/\s+/g, ' ').trim()
+  if (albumName && albumName.toLowerCase() !== (by || name).toLowerCase()) {
+    params.set('al', albumName.slice(0, 180))
+  }
+  if (dur) params.set('d', String(dur))
+  const res = await fetch(`https://api.betterlyrics.org/getLyrics?${params}`, {
+    headers: { 'User-Agent': LYRICS_UA, Accept: 'application/json' },
+    signal: AbortSignal.timeout(10000),
+  })
+  if (!res.ok) return null
+  const data = await res.json()
+  const ttml = data && typeof data.ttml === 'string' ? data.ttml : ''
+  if (!ttml.includes('<p')) return null
+  const parsed = parseTtml(ttml)
+  return {
+    lines: parsed && parsed.lines ? parsed.lines : [],
+    ttml,
+    syncType: parsed && parsed.syncType ? parsed.syncType : 'rich',
+    source: 'Better Lyrics',
+  }
+}
+
 // Combined lyrics pipeline, in quality order:
-//   1. lrc.red TTML — real per-word timings ("rich") or per-line timings ("line")
-//   2. LRCLIB      — per-line timings, words interpolated across the line
-//   3. YouTube Mix — untimed plain text (shown when nothing timed is found)
-// Results are cached per video id so flipping between tracks never refetches.
+//   1. Better Lyrics — syllable timings (TTML)
+//   2. lrc.red TTML — real per-word timings ("rich") or per-line timings ("line")
+//   3. LRCLIB      — per-line timings, words interpolated across the line
+//   4. YouTube Mix — untimed plain text (shown when nothing timed is found)
+// A hit is cached per video and duration. A lookup that starts before the
+// player knows the length is not cached, so the timed request can still run.
 const lyricsCache = new Map()
 
-async function getMusicLyrics({ videoId, title, artist, duration } = {}) {
-  if (videoId && lyricsCache.has(videoId)) return lyricsCache.get(videoId)
+async function getMusicLyrics({ videoId, title, artist, album, duration } = {}) {
+  const dur = durationToSeconds(duration)
+  const cacheKey = videoId && dur
+    ? `${videoId}|${dur}|${cleanTrackName(title)}|${cleanArtistName(artist)}|${album || ''}`
+    : ''
+  if (cacheKey && lyricsCache.has(cacheKey)) return lyricsCache.get(cacheKey)
   const run = (async () => {
     let synced = null
     let syncType = null
     let source = null
-    try {
-      const rich = await getRichLyrics(title, artist, duration)
-      if (rich && rich.lines.length >= 2) {
-        synced = rich.lines
-        syncType = rich.syncType
-        source = rich.source
-      }
-    } catch (e) { console.warn('[Music] rich lyrics', e.message) }
-    if (!synced) {
+    let ttml = ''
+    if (dur) {
+      try {
+        // A topic upload often has no real artist ("Song"). The cached Better
+        // Lyrics entry is usually under the title, so a miss retries without one.
+        let better = await getBetterLyrics(title, artist, album, duration)
+        if (!better && artist) better = await getBetterLyrics(title, '', album, duration)
+        if (better && (better.ttml || better.lines.length >= 2)) {
+          synced = better.lines
+          syncType = better.syncType
+          source = better.source
+          ttml = better.ttml
+        }
+      } catch (e) { console.warn('[Music] better lyrics', e.message) }
+    }
+    if (!ttml && !(synced && synced.length >= 2)) {
+      try {
+        const rich = await getRichLyrics(title, artist, duration)
+        if (rich && rich.lines.length >= 2) {
+          synced = rich.lines
+          syncType = rich.syncType
+          source = rich.source
+        }
+      } catch (e) { console.warn('[Music] rich lyrics', e.message) }
+    }
+    if (!ttml && !(synced && synced.length)) {
       try {
         const s = await getSyncedLyrics(title, artist, duration)
         if (s) { synced = s.lines; syncType = 'line'; source = 'LRCLIB' }
       } catch (e) { console.warn('[Music] synced lyrics', e.message) }
     }
-    if (synced && synced.length) {
-      return { ok: true, synced, syncType: syncType || 'line', source, lyrics: '', footer: source ? `Lyrics · ${source}` : '' }
+    if (ttml || (synced && synced.length)) {
+      return {
+        ok: true,
+        synced: synced || [],
+        ttml,
+        syncType: syncType || 'line',
+        source,
+        lyrics: '',
+        footer: source ? `Lyrics · ${source}` : '',
+      }
     }
     const yt = await getYtMusicLyrics(videoId)
     return { ...yt, synced: null, syncType: yt.ok ? 'plain' : null, source: yt.ok ? 'YouTube Music' : null }
@@ -3260,8 +3325,8 @@ async function getMusicLyrics({ videoId, title, artist, duration } = {}) {
     console.error('[Music] lyrics', e.message)
     return { ok: false, synced: null, syncType: null, reason: e.message || 'Lyrics unavailable' }
   })
-  if (videoId) {
-    lyricsCache.set(videoId, guarded)
+  if (cacheKey) {
+    lyricsCache.set(cacheKey, guarded)
     // Cap the cache so a long listening session can't grow it without bound.
     if (lyricsCache.size > 200) lyricsCache.delete(lyricsCache.keys().next().value)
   }
@@ -5833,6 +5898,29 @@ async function coverPalette(url) {
   return palette
 }
 
+const coverImageCache = new Map()
+
+function imageMime(buf) {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg'
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50) return 'image/png'
+  if (buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF') return 'image/webp'
+  return 'image/jpeg'
+}
+
+// A same-origin data URL so the fluid cover shader can sample the artwork.
+// YouTube thumbnails omit CORS, which leaves a WebGL texture blank.
+async function coverImageDataUrl(url) {
+  if (typeof url !== 'string' || !url.startsWith('https://')) return null
+  const hit = coverImageCache.get(url)
+  if (hit) return hit
+  const buf = await fetchHttpsBuffer(url)
+  if (!buf || buf.length < 32) return null
+  const dataUrl = `data:${imageMime(buf)};base64,${buf.toString('base64')}`
+  coverImageCache.set(url, dataUrl)
+  if (coverImageCache.size > 24) coverImageCache.delete(coverImageCache.keys().next().value)
+  return dataUrl
+}
+
 function setupIPC() {
   ipcMain.handle('get-app-path', () => CONFIG_DIR)
   ipcMain.handle('get-downloads-path', () => DOWNLOADS_DIR)
@@ -6062,6 +6150,10 @@ function setupIPC() {
   // done by the time the user hits play (fills streamUrlCache, no ffmpeg started).
   ipcMain.handle('cover-palette', async (_e, url) => {
     try { return await coverPalette(url) } catch (e) { console.error('[cover] palette', e.message); return null }
+  })
+
+  ipcMain.handle('cover-image', async (_e, url) => {
+    try { return await coverImageDataUrl(url) } catch (e) { console.error('[cover] image', e.message); return null }
   })
 
   ipcMain.handle('yt-prewarm', async (_e, videoId) => {
