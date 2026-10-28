@@ -12,6 +12,13 @@ const LYRIC_MOTIONS = [
   { id: 'fade', label: 'Fade' },
 ]
 
+function coverWashStyle(wash) {
+  if (!wash || !wash.top || !wash.mid || !wash.bottom) return undefined
+  return {
+    background: `linear-gradient(180deg, rgb(${wash.top}) 0%, rgb(${wash.mid}) 46%, rgb(${wash.bottom}) 100%)`,
+  }
+}
+
 function fmt(t) {
   if (!t || !isFinite(t)) return '0:00'
   const m = Math.floor(t / 60)
@@ -280,7 +287,7 @@ function FullPlayer({
   view, setView, onClose, onAmbient,
   showLyrics, hasSynced, getTime, lyricOffset, setLyricOffset,
   lyricMotion, setLyricMotion, motionOff,
-  apple, liked, onLike, onDownload,
+  apple, liked, onLike, onDownload, wash,
 }) {
   const pct = duration ? (currentTime / duration) * 100 : 0
   const tabCls = (on) => `px-3.5 py-1 rounded-full text-xs font-medium transition-colors ${on ? 'bg-white text-gray-900 shadow-sm' : 'text-white/70 hover:text-white hover:bg-white/10'}`
@@ -354,7 +361,7 @@ function FullPlayer({
 
   if (apple) {
     return (
-      <div className="np-apple fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in text-white">
+      <div className="np-apple fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in text-white" style={coverWashStyle(wash)}>
         <div className="relative z-10 flex items-center px-4 sm:px-6 pt-4 pb-2">
           <button onClick={onClose} aria-label="Close full screen player" title="Close (Esc)" className="w-10 h-10 rounded-full flex items-center justify-center text-white/80 hover:bg-white/10">
             <svg viewBox="0 0 24 24" className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -426,18 +433,18 @@ function FullPlayer({
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in">
+    <div className="fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in" style={coverWashStyle(wash)}>
       {current.thumbnail ? (
         <img
           src={current.thumbnail}
           alt=""
           referrerPolicy="no-referrer"
-          className="ambient-img absolute inset-0 w-full h-full object-cover scale-125 blur-3xl opacity-50"
+          className={`ambient-img absolute inset-0 w-full h-full object-cover scale-125 blur-3xl ${wash ? 'opacity-30' : 'opacity-50'}`}
         />
       ) : (
         <div className="absolute inset-0 bg-neutral-900" />
       )}
-      <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/55 to-black/85" />
+      <div className={`absolute inset-0 bg-gradient-to-b ${wash ? 'from-black/10 via-black/20 to-black/40' : 'from-black/40 via-black/55 to-black/85'}`} />
 
       {/* Top bar */}
       <div className="relative z-10 flex items-center justify-between px-4 sm:px-6 py-3">
@@ -555,6 +562,7 @@ export default function MiniPlayer() {
   const [view, setView] = useState('art') // 'art' | 'lyrics'
   const [ambient, setAmbient] = useState(false)
   const [full, setFull] = useState(false) // full-screen "Now playing" player
+  const [coverWash, setCoverWash] = useState(null)
   const [lyrics, setLyrics] = useState(null) // { forId, loading, ok, text, reason, footer }
   const lyricsCache = useRef(new Map())
 
@@ -606,6 +614,16 @@ export default function MiniPlayer() {
     return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, ambient, trackKey])
+
+  useEffect(() => {
+    const url = current && current.thumbnail
+    if (!url || !window.electronAPI?.coverPalette) { setCoverWash(null); return }
+    let alive = true
+    window.electronAPI.coverPalette(url).then((palette) => {
+      if (alive) setCoverWash(palette && palette.top ? palette : null)
+    }).catch(() => { if (alive) setCoverWash(null) })
+    return () => { alive = false }
+  }, [current && current.thumbnail])
 
   // ── Global keyboard shortcuts ──────────────────────────────────────────
   // The same keys the video player uses (YouTube's set: Space, k, j, l,
@@ -677,18 +695,18 @@ export default function MiniPlayer() {
     <>
       {/* Ambient mode: full-screen cover art + lyrics over a blurred backdrop */}
       {ambient && (
-        <div className="fixed inset-0 z-[70] flex flex-col overflow-hidden animate-fade-in">
+        <div className="fixed inset-0 z-[70] flex flex-col overflow-hidden animate-fade-in" style={coverWashStyle(coverWash)}>
           {current.thumbnail ? (
             <img
               src={current.thumbnail}
               alt=""
               referrerPolicy="no-referrer"
-              className="ambient-img absolute inset-0 w-full h-full object-cover scale-125 blur-3xl opacity-50"
+              className={`ambient-img absolute inset-0 w-full h-full object-cover scale-125 blur-3xl ${coverWash ? 'opacity-30' : 'opacity-50'}`}
             />
           ) : (
             <div className="absolute inset-0 bg-neutral-900" />
           )}
-          <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/55 to-black/85" />
+          <div className={`absolute inset-0 bg-gradient-to-b ${coverWash ? 'from-black/10 via-black/20 to-black/40' : 'from-black/40 via-black/55 to-black/85'}`} />
 
           {/* Top bar */}
           <div className="relative z-10 flex items-center justify-between px-4 sm:px-6 py-3">
@@ -857,6 +875,7 @@ export default function MiniPlayer() {
               return next
             })
           }}
+          wash={coverWash}
           onDownload={() => {
             const id = current && (current.videoId || current.id)
             if (!id) return

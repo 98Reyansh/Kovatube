@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage, net, Notification } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage, net, Notification, nativeImage } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -5618,6 +5618,112 @@ function createWindow() {
   })
 }
 
+function hslToRgb(h, s, l) {
+  if (s === 0) return [l * 255, l * 255, l * 255]
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+  const p = 2 * l - q
+  const hue = (t) => {
+    if (t < 0) t += 1
+    if (t > 1) t -= 1
+    if (t < 1 / 6) return p + (q - p) * 6 * t
+    if (t < 1 / 2) return q
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+    return p
+  }
+  return [hue(h + 1 / 3) * 255, hue(h) * 255, hue(h - 1 / 3) * 255]
+}
+
+function shadeRgb(r, g, b, targetL) {
+  r /= 255; g /= 255; b /= 255
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  let h = 0
+  const l = (max + min) / 2
+  let s = 0
+  if (max !== min) {
+    const d = max - min
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6
+    else if (max === g) h = ((b - r) / d + 2) / 6
+    else h = ((r - g) / d + 4) / 6
+  }
+  s = Math.min(0.55, Math.max(0.22, s || 0.28))
+  return hslToRgb(h, s, targetL).map((v) => Math.round(Math.max(0, Math.min(255, v)))).join(' ')
+}
+
+// Pull a hue out of a cover image so the full-screen player can be painted
+// with that song's colors. Colorful pixels outweigh near-black and near-white.
+function paletteFromBitmap(bitmap) {
+  let wr = 0, wg = 0, wb = 0, weight = 0
+  let ar = 0, ag = 0, ab = 0, count = 0
+  for (let i = 0; i + 3 < bitmap.length; i += 4) {
+    const b = bitmap[i]
+    const g = bitmap[i + 1]
+    const r = bitmap[i + 2]
+    count++
+    ar += r; ag += g; ab += b
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const light = (max + min) / 510
+    const sat = max === min ? 0 : (max - min) / (light > 0.5 ? (510 - max - min) : (max + min))
+    if (light < 0.1 || light > 0.92 || sat < 0.12) continue
+    const w = sat * sat
+    wr += r * w; wg += g * w; wb += b * w; weight += w
+  }
+  const r = weight > 0 ? wr / weight : (count ? ar / count : 88)
+  const g = weight > 0 ? wg / weight : (count ? ag / count : 72)
+  const b = weight > 0 ? wb / weight : (count ? ab / count : 108)
+  return { top: shadeRgb(r, g, b, 0.5), mid: shadeRgb(r, g, b, 0.36), bottom: shadeRgb(r, g, b, 0.22) }
+}
+
+const coverPaletteCache = new Map()
+
+function fetchHttpsBuffer(url, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    let parsed
+    try { parsed = new URL(url) } catch { reject(new Error('bad url')); return }
+    if (parsed.protocol !== 'https:' || redirects > 3) { reject(new Error('bad url')); return }
+    const lib = parsed.protocol === 'https:' ? https : http
+    const req = lib.get(url, { headers: { 'User-Agent': UA } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume()
+        fetchHttpsBuffer(new URL(res.headers.location, url).href, redirects + 1).then(resolve, reject)
+        return
+      }
+      if (res.statusCode !== 200) { res.resume(); reject(new Error('http ' + res.statusCode)); return }
+      const chunks = []
+      let size = 0
+      res.on('data', (chunk) => {
+        size += chunk.length
+        if (size > 4_000_000) { req.destroy(); reject(new Error('too big')); return }
+        chunks.push(chunk)
+      })
+      res.on('end', () => resolve(Buffer.concat(chunks)))
+      res.on('error', reject)
+    })
+    req.on('error', reject)
+    req.setTimeout(8000, () => req.destroy(new Error('timeout')))
+  })
+}
+
+async function coverPalette(url) {
+  if (typeof url !== 'string' || !url.startsWith('https://')) return null
+  const hit = coverPaletteCache.get(url)
+  if (hit) return hit
+  const buf = await fetchHttpsBuffer(url)
+  const image = nativeImage.createFromBuffer(buf)
+  const size = image.getSize()
+  if (!size.width || !size.height) return null
+  const sample = image.resize({ width: 24, height: 24, quality: 'good' })
+  const palette = paletteFromBitmap(sample.toBitmap())
+  coverPaletteCache.set(url, palette)
+  if (coverPaletteCache.size > 40) {
+    const first = coverPaletteCache.keys().next().value
+    coverPaletteCache.delete(first)
+  }
+  return palette
+}
+
 function setupIPC() {
   ipcMain.handle('get-app-path', () => CONFIG_DIR)
   ipcMain.handle('get-downloads-path', () => DOWNLOADS_DIR)
@@ -5845,6 +5951,10 @@ function setupIPC() {
 
   // Resolve a video's stream URLs ahead of playback so the slow yt-dlp call is
   // done by the time the user hits play (fills streamUrlCache, no ffmpeg started).
+  ipcMain.handle('cover-palette', async (_e, url) => {
+    try { return await coverPalette(url) } catch (e) { console.error('[cover] palette', e.message); return null }
+  })
+
   ipcMain.handle('yt-prewarm', async (_e, videoId) => {
     if (!videoId) return { ok: false, reason: 'No video ID' }
     const urls = await getMediaUrls(videoId, settingsCache.defaultQuality || 'auto')
