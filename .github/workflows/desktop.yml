@@ -72,14 +72,15 @@ jobs:
           fi
           VERSION="${TAG#v}"
           mapfile -t files < <(find release-files -type f \( -name '*.AppImage' -o -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \))
-          notes=$(cat <<EOF
-Linux AppImage, Windows installer, and macOS disk images and zip archives (Apple silicon and Intel).
+          notes=$(cat <<'EOF'
+          Linux AppImage, Windows installer, and macOS disk images and zip archives (Apple silicon and Intel).
 
-This release turns the Linux GPU back on, loads Shorts faster with five videos kept ready, and adds a Material theme plus an Apple Music now-playing screen. Opening a song from its cover shows the full player, including ambient mode, and the background follows the cover colors.
+          This release turns the Linux GPU back on, loads Shorts faster with five videos kept ready, and adds a Material theme plus an Apple Music now-playing screen. Opening a song from its cover shows the full player, including ambient mode, and the background follows the cover colors.
 
-yt-dlp and ffmpeg still need to be installed, unless you place them in the app \`bin\` folder. These macOS and Windows builds are unsigned, so Gatekeeper and SmartScreen warn the first time you open them.
-EOF
-)
+          yt-dlp and ffmpeg still need to be installed, unless you place them in the app bin folder. These macOS and Windows builds are unsigned, so Gatekeeper and SmartScreen warn the first time you open them.
+          EOF
+          )
+          notes="$(printf '%s\n' "$notes" | sed 's/^ \{10\}//')"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${files[@]}" --clobber
           else
