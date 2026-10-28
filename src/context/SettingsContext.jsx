@@ -28,7 +28,9 @@ const DEFAULTS = {
   fypSource: 'auto', // 'auto' (personalized when signed in) | 'signedIn' | 'anon'
   welcomed: false, // first-launch welcome has been dismissed
   navPosition: 'side', // 'side' | 'top'
+  playerBar: 'pill', // 'pill' | 'full'
   lyricAnimation: 'karaoke', // 'karaoke' | 'rise' | 'glow' | 'bounce' | 'fade'
+  lyricShader: true, // fluid album-art background on the full player
 }
 
 export const ACCENT_PRESETS = {

@@ -50,7 +50,7 @@ export default function TrackRow({ track, queue, sourceMeta = null, index, onRem
       <div className="min-w-0 flex-1">
         <p className={`text-sm truncate ${active ? 'text-yt-red font-medium' : 'font-medium'}`}>{track.title}</p>
         <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-          {[track.artist, track.album, track.subtitle].filter(Boolean).join(' • ') || 'Unknown artist'}
+          {[track.artist, track.album].filter(Boolean).join(' • ') || track.subtitle || 'Unknown artist'}
         </p>
       </div>
 

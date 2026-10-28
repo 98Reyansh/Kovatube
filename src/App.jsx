@@ -64,10 +64,14 @@ function TopProgressBar() {
 function AnimatedRoutes() {
   const location = useLocation()
   const { current: queueCurrent } = useQueue()
+  const { settings } = useSettings()
   const { refreshToken } = useNetwork()
   const fill = location.pathname === '/shorts'
+  const fullBar = settings.playerBar === 'bar' || settings.playerBar === 'full'
+  const sideLift = fullBar && settings.navPosition !== 'top'
+  const bottomPad = !queueCurrent ? 'pb-0' : sideLift ? 'pb-4' : fullBar ? 'pb-20' : 'pb-24'
   return (
-    <main className={`min-h-0 flex-1 transition-[padding] duration-300 ${fill ? 'overflow-hidden' : 'overflow-auto'} ${queueCurrent ? 'pb-20' : 'pb-0'}`}>
+    <main className={`min-h-0 flex-1 transition-[padding] duration-300 ${fill ? 'overflow-hidden' : 'overflow-auto'} ${bottomPad}`}>
       <div key={location.pathname + ':' + refreshToken} className={fill ? 'h-full' : undefined}>
         <div className={fill ? 'h-full' : 'px-8 py-7 page-enter'}>
           <Routes location={location}>
@@ -98,7 +102,10 @@ function Layout() {
   const [showIntro, setShowIntro] = useState(true)
   const [welcomeOpen, setWelcomeOpen] = useState(false)
   const welcomeDecided = useRef(false)
+  const { current: playingNow } = useQueue()
   const topNav = settings.navPosition === 'top'
+  const fullBar = (settings.playerBar === 'bar' || settings.playerBar === 'full') && !!playingNow
+  const liftSidebar = fullBar && !topNav
 
   useEffect(() => {
     if (!hydrated || welcomeDecided.current) return
@@ -116,7 +123,7 @@ function Layout() {
 
   return (
     <WelcomeReplayProvider openWelcome={() => setWelcomeOpen(true)}>
-    <div className={`flex h-screen min-h-0 bg-white dark:bg-yt-dark ${topNav ? 'flex-col' : ''}`}>
+    <div className={`flex h-screen min-h-0 bg-white dark:bg-yt-dark ${topNav ? 'flex-col' : ''} ${liftSidebar ? 'sidebar-lift pb-16' : ''}`}>
       <TopProgressBar />
       {!topNav && <Sidebar />}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">

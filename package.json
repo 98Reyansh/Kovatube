@@ -17,6 +17,9 @@
     "electron:build:dir": "vite build && electron-builder --linux --dir"
   },
   "dependencies": {
+    "@braccato/core": "^1.16.13",
+    "@braccato/parsers": "^0.4.0",
+    "@kawarp/core": "^1.3.1",
     "hls.js": "^1.7.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -60,15 +63,29 @@
     },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] },
-        { "target": "zip", "arch": ["arm64", "x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "category": "public.app-category.entertainment",
       "icon": "public/icon.png",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "public/icon.ico",
       "artifactName": "${productName}-${version}-${arch}-setup.${ext}"
     },
@@ -80,7 +97,13 @@
       "artifactName": "${productName}-${version}-${arch}.AppImage"
     },
     "extraResources": [
-      { "from": "bin", "to": "bin", "filter": ["**/*"] }
+      {
+        "from": "bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "compression": "maximum",
     "removePackageScripts": true

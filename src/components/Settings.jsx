@@ -228,8 +228,29 @@ export default function Settings() {
             </SettingRow>
 
             <SettingRow
+              title="Music player"
+              description="A floating pill, or a bar along the bottom. The bar sits under the sidebar so your account stays visible."
+            >
+              <select
+                value={settings.playerBar === 'full' ? 'full' : 'pill'}
+                onChange={(e) => updateSetting('playerBar', e.target.value)}
+                className="px-3 py-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm focus:outline-none focus:ring-2 focus:ring-yt-red/50 hover:border-yt-red/40"
+              >
+                <option value="pill">Pill</option>
+                <option value="full">Full bar</option>
+              </select>
+            </SettingRow>
+
+            <SettingRow
+              title="Album shaders"
+              description="Fluid cover-art background behind the full player and ambient lyrics"
+            >
+              <Toggle checked={settings.lyricShader !== false} onChange={(v) => updateSetting('lyricShader', v)} />
+            </SettingRow>
+
+            <SettingRow
               title="Lyrics animation"
-              description="How the line being sung moves"
+              description="How plain lyrics move. Synced lyrics follow the words on their own."
             >
               <select
                 value={settings.lyricAnimation || 'karaoke'}
