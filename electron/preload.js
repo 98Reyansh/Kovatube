@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ytSearch: (query) => ipcRenderer.invoke('yt-search', query),
   ytHomeFeed: () => ipcRenderer.invoke('yt-home-feed'),
   ytShortsFeed: () => ipcRenderer.invoke('yt-shorts-feed'),
+  onShortsFeedMore: (cb) => { ipcRenderer.on('shorts-feed-more', (_e, data) => cb(data)) },
+  removeShortsFeedMoreListeners: () => { ipcRenderer.removeAllListeners('shorts-feed-more') },
   ytFypPage: (args) => ipcRenderer.invoke('yt-fyp-page', args),
   ytPrefs: () => ipcRenderer.invoke('yt-prefs'),
   ytRecordWatch: (v) => ipcRenderer.invoke('yt-record-watch', v),

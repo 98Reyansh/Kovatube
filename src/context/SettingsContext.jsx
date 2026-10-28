@@ -9,7 +9,8 @@ export function useSettings() {
 }
 
 const DEFAULTS = {
-  theme: 'dark', // 'dark' | 'light' | 'amoled'
+  theme: 'dark', // 'dark' | 'light' | 'amoled' | 'material'
+  musicStyle: 'standard', // 'standard' | 'apple'
   accentColor: 'red',
   autoplay: true,
   defaultQuality: 'auto',
@@ -68,7 +69,9 @@ export function SettingsProvider({ children }) {
     const root = document.documentElement
     root.classList.toggle('dark', settings.theme !== 'light')
     root.classList.toggle('amoled', settings.theme === 'amoled')
-  }, [settings.theme])
+    root.classList.toggle('material', settings.theme === 'material')
+    root.classList.toggle('music-apple', settings.musicStyle === 'apple')
+  }, [settings.theme, settings.musicStyle])
 
   useEffect(() => {
     const preset = ACCENT_PRESETS[settings.accentColor] || ACCENT_PRESETS.red
@@ -96,8 +99,8 @@ export function SettingsProvider({ children }) {
 
   const toggleTheme = useCallback(async () => {
     setSettings(prev => {
-      // Cycle: light -> dark -> amoled -> light
-      const nextTheme = prev.theme === 'light' ? 'dark' : prev.theme === 'dark' ? 'amoled' : 'light'
+      const order = ['light', 'dark', 'amoled', 'material']
+      const nextTheme = order[(order.indexOf(prev.theme) + 1) % order.length] || 'dark'
       if (window.electronAPI) window.electronAPI.settingsSet({ theme: nextTheme }).catch(() => {})
       return { ...prev, theme: nextTheme }
     })

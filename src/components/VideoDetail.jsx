@@ -734,6 +734,12 @@ export default function VideoDetail() {
   const [formatError, setFormatError] = useState(null)
   const [playingLocal, setPlayingLocal] = useState(null)
   const [downloadOpen, setDownloadOpen] = useState(false)
+  const [videosDir, setVideosDir] = useState('')
+  useEffect(() => {
+    window.electronAPI?.getDownloadPaths?.().then((paths) => {
+      if (paths?.videos) setVideosDir(paths.videos)
+    }).catch(() => {})
+  }, [])
   const [related, setRelated] = useState([])
   const [loadingRelated, setLoadingRelated] = useState(false)
   const iframeRef = useRef(null)
@@ -1064,7 +1070,7 @@ export default function VideoDetail() {
                         </div>
                       )}
                       <p className="text-center text-xs text-gray-400 dark:text-gray-500">
-                        Videos save to ~/.config/Kovatube/downloads/videos
+                        {videosDir ? `Videos save to ${videosDir}` : 'Videos save to the downloads folder'}
                       </p>
                     </>
                   )}

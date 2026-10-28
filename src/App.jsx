@@ -68,7 +68,7 @@ function AnimatedRoutes() {
   return (
     <main className={`min-h-0 flex-1 transition-[padding] duration-300 ${fill ? 'overflow-hidden' : 'overflow-auto'} ${queueCurrent ? 'pb-20' : 'pb-0'}`}>
       <div key={location.pathname + ':' + refreshToken} className={fill ? 'h-full' : undefined}>
-        <div className="px-8 py-7 page-enter">
+        <div className={fill ? 'h-full' : 'px-8 py-7 page-enter'}>
           <Routes location={location}>
             <Route path="/" element={<Home />} />
             <Route path="/video/:id" element={<VideoDetail />} />

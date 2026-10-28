@@ -22,6 +22,7 @@ const THEMES = [
   { id: 'dark', label: 'Dark', detail: 'The default look' },
   { id: 'light', label: 'Light', detail: 'Bright surfaces' },
   { id: 'amoled', label: 'AMOLED', detail: 'Pure black' },
+  { id: 'material', label: 'Material', detail: 'Tonal, rounded surfaces' },
 ]
 
 export default function WelcomeWizard({ onDone }) {
@@ -148,7 +149,7 @@ function LookStep({ settings, updateSetting }) {
       <p className="mt-2 text-sm leading-relaxed text-gray-500 dark:text-zinc-400">
         Theme and accent are saved on this desktop. You can change either one later in Settings.
       </p>
-      <div className="mt-5 grid grid-cols-3 gap-2">
+      <div className="mt-5 grid grid-cols-2 gap-2">
         {THEMES.map((option) => {
           const selected = settings.theme === option.id
           return (

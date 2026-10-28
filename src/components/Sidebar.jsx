@@ -118,8 +118,12 @@ export default function Sidebar() {
           <MenuLink to="/saved" onClick={() => setAccountOpen(false)} label="Saved videos" count={savedVideos.length} />
           <MenuLink to="/watch-later" onClick={() => setAccountOpen(false)} label="Watch later" count={watchLater.length} />
           <MenuLink to="/settings" onClick={() => setAccountOpen(false)} label="Settings" />
-          <MenuButton onClick={() => updateSetting('theme', settings.theme === 'light' ? 'dark' : settings.theme === 'dark' ? 'amoled' : 'light')}>
-            Theme: {settings.theme.charAt(0).toUpperCase() + settings.theme.slice(1)}
+          <MenuButton onClick={() => {
+            const order = ['light', 'dark', 'amoled', 'material']
+            const next = order[(order.indexOf(settings.theme) + 1) % order.length] || 'dark'
+            updateSetting('theme', next)
+          }}>
+            Theme: {settings.theme === 'material' ? 'Material' : settings.theme.charAt(0).toUpperCase() + settings.theme.slice(1)}
           </MenuButton>
           <MenuButton onClick={() => updateSetting('fypSource', settings.fypSource === 'signed' ? 'anon' : 'signed')}>
             Feed: {settings.fypSource === 'signed' ? 'Personalized' : 'Trending'}

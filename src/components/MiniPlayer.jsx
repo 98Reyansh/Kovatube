@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQueue } from '../context/QueueContext'
 import { useSettings } from '../context/SettingsContext'
+import { useDownloads } from '../context/DownloadContext'
 import { pushMediaFocus, currentMediaFocus } from '../mediaFocus'
 
 const LYRIC_MOTIONS = [
@@ -279,9 +280,151 @@ function FullPlayer({
   view, setView, onClose, onAmbient,
   showLyrics, hasSynced, getTime, lyricOffset, setLyricOffset,
   lyricMotion, setLyricMotion, motionOff,
+  apple, liked, onLike, onDownload,
 }) {
   const pct = duration ? (currentTime / duration) * 100 : 0
   const tabCls = (on) => `px-3.5 py-1 rounded-full text-xs font-medium transition-colors ${on ? 'bg-white text-gray-900 shadow-sm' : 'text-white/70 hover:text-white hover:bg-white/10'}`
+  const artBlock = view === 'art' ? (
+    current.thumbnail ? (
+      <img
+        src={current.thumbnail}
+        alt=""
+        referrerPolicy="no-referrer"
+        className={`object-cover shadow-2xl transition-transform duration-700 ease-out ${playing ? 'scale-100' : 'scale-95 opacity-90'} ${apple ? 'w-[min(72vw,440px)] aspect-square rounded-2xl' : 'rounded-2xl w-44 h-44 sm:w-64 sm:h-64 md:w-80 md:h-80'}`}
+      />
+    ) : (
+      <div className={`${apple ? 'w-[min(72vw,440px)] aspect-square' : 'w-44 h-44 sm:w-64 sm:h-64 md:w-80 md:h-80'} rounded-2xl bg-white/10`} />
+    )
+  ) : (
+    <div className={`w-full min-h-0 ${apple ? 'h-64 sm:h-80' : 'flex-1 max-w-2xl'}`}>
+      {(!showLyrics || showLyrics.loading) ? (
+        <div className="h-full flex items-center justify-center gap-2 text-sm text-white/60">
+          <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin text-yt-red" fill="none">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
+            <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+          </svg>
+          Loading lyrics…
+        </div>
+      ) : showLyrics.ok ? (
+        <LyricsView
+          ambient
+          synced={showLyrics.synced}
+          plain={showLyrics.text}
+          footer={showLyrics.footer}
+          currentTime={currentTime}
+          getTime={getTime}
+          offset={lyricOffset}
+          onSeek={seek}
+          animation={motionOff ? 'still' : lyricMotion}
+        />
+      ) : (
+        <div className="h-full flex flex-col items-center justify-center text-center gap-2 text-white/50">
+          <svg viewBox="0 0 24 24" className="w-8 h-8" fill="currentColor"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" /></svg>
+          <p className="text-sm">{showLyrics.reason || 'Lyrics not available'}</p>
+        </div>
+      )}
+    </div>
+  )
+  const optionRow = (
+    <div className="flex items-center justify-center gap-2 flex-wrap">
+      <div className="flex items-center gap-1 bg-white/10 rounded-full p-0.5">
+        <button onClick={() => setView('art')} className={tabCls(view === 'art')}>Artwork</button>
+        <button onClick={() => setView('lyrics')} className={tabCls(view === 'lyrics')}>Lyrics</button>
+        <button onClick={onAmbient} className={tabCls(false)}>Ambient</button>
+      </div>
+      <Btn label="Shuffle" tone="onDark" active={shuffle} onClick={() => setShuffle(s => !s)}>
+        <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{Icon.shuffle}</svg>
+      </Btn>
+      <Btn label={`Repeat: ${repeat}`} tone="onDark" active={repeat !== 'off'} onClick={cycleRepeat}>
+        <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{repeat === 'one' ? Icon.repeatOne : Icon.repeat}</svg>
+      </Btn>
+      <div className="hidden sm:flex items-center gap-2">
+        <Btn label={volume === 0 ? 'Unmute' : 'Mute'} tone="onDark" onClick={() => setVolume(volume === 0 ? 1 : 0)}>
+          <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{volume === 0 ? Icon.mute : Icon.volume}</svg>
+        </Btn>
+        <input
+          type="range" min="0" max="1" step="0.01" value={volume}
+          onChange={(e) => setVolume(parseFloat(e.target.value))}
+          className="range-minimal range-on-dark w-28"
+          aria-label="Volume"
+        />
+      </div>
+    </div>
+  )
+
+  if (apple) {
+    return (
+      <div className="np-apple fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in text-white">
+        <div className="relative z-10 flex items-center px-4 sm:px-6 pt-4 pb-2">
+          <button onClick={onClose} aria-label="Close full screen player" title="Close (Esc)" className="w-10 h-10 rounded-full flex items-center justify-center text-white/80 hover:bg-white/10">
+            <svg viewBox="0 0 24 24" className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </button>
+          <div className="flex-1 text-center min-w-0 pr-10">
+            <p className="text-[13px] font-semibold">Now Playing</p>
+            <p className="text-[11px] text-white/60 truncate">{source?.title || current.artist || 'Music'}</p>
+          </div>
+        </div>
+        <div className="relative z-10 flex-1 min-h-0 flex flex-col items-center justify-center px-6 gap-5 w-full max-w-xl mx-auto">
+          {artBlock}
+          <div className="w-full">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1 text-left">
+                <p className="text-[22px] font-bold leading-tight truncate">{current.title}</p>
+                <p className="text-sm text-white/70 truncate mt-0.5">{[current.artist || 'Unknown artist', source?.title].filter(Boolean).join(', ')}</p>
+              </div>
+              <button onClick={onDownload} aria-label="Download song" title="Download" className="w-10 h-10 rounded-full flex items-center justify-center text-white/80 hover:bg-white/10 shrink-0">
+                <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 4v10m0 0l-4-4m4 4l4-4M5 19h14" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+              <button onClick={onLike} aria-label={liked ? 'Remove from liked songs' : 'Like song'} title={liked ? 'Liked' : 'Like'} className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 hover:bg-white/10 ${liked ? 'text-rose-300' : 'text-white/80'}`}>
+                <svg viewBox="0 0 24 24" className="w-5 h-5" fill={liked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8"><path d="M12 20s-7-4.4-7-9a4 4 0 017-2 4 4 0 017 2c0 4.6-7 9-7 9z" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              </button>
+            </div>
+            <div className="mt-4 flex items-center gap-3">
+              <span className="text-[11px] tabular-nums text-white/70 w-10">{fmt(currentTime)}</span>
+              <div
+                className="relative flex-1 h-1.5 rounded-full bg-white/25 cursor-pointer"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  if (duration) seek(((e.clientX - rect.left) / rect.width) * duration)
+                }}
+              >
+                <div className="h-full rounded-full bg-white" style={{ width: `${pct}%` }} />
+              </div>
+              <span className="text-[11px] tabular-nums text-white/70 w-10 text-right">{fmt(duration)}</span>
+            </div>
+          </div>
+        </div>
+        {view === 'lyrics' && hasSynced && (
+          <div className="relative z-10 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pb-1">
+            <SyncControl offset={lyricOffset} onChange={setLyricOffset} ambient />
+            <LyricMotion value={lyricMotion} onChange={setLyricMotion} disabled={motionOff} ambient />
+          </div>
+        )}
+        <div className="relative z-10 px-6 pb-7 pt-2 w-full max-w-xl mx-auto">
+          <div className="flex items-center justify-center gap-10">
+            <Btn label="Previous" tone="onDark" onClick={prev}>
+              <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor">{Icon.prev}</svg>
+            </Btn>
+            <button onClick={toggle} aria-label={playing ? 'Pause' : 'Play'} className="apple-play">
+              {loading ? (
+                <svg viewBox="0 0 24 24" className="w-7 h-7 animate-spin" fill="none">
+                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
+                  <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" className="w-8 h-8" fill="currentColor">{playing ? Icon.pause : Icon.play}</svg>
+              )}
+            </button>
+            <Btn label="Next" tone="onDark" onClick={() => next(false)}>
+              <svg viewBox="0 0 24 24" className="w-7 h-7" fill="currentColor">{Icon.next}</svg>
+            </Btn>
+          </div>
+          <div className="mt-6">{optionRow}</div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="fixed inset-0 z-[60] flex flex-col overflow-hidden animate-fade-in">
       {current.thumbnail ? (
@@ -329,47 +472,7 @@ function FullPlayer({
 
       {/* Body: artwork or lyrics */}
       <div className="relative z-10 flex-1 min-h-0 flex flex-col items-center justify-center gap-5 px-5 sm:px-8 pb-1 w-full max-w-3xl mx-auto">
-        {view === 'art' ? (
-          current.thumbnail ? (
-            <img
-              src={current.thumbnail}
-              alt=""
-              referrerPolicy="no-referrer"
-              className={`rounded-2xl object-cover shadow-2xl transition-transform duration-700 ease-out ${playing ? 'scale-100' : 'scale-95 opacity-90'} w-44 h-44 sm:w-64 sm:h-64 md:w-80 md:h-80`}
-            />
-          ) : (
-            <div className="w-44 h-44 sm:w-64 sm:h-64 md:w-80 md:h-80 rounded-2xl bg-white/10" />
-          )
-        ) : (
-          <div className="w-full flex-1 min-h-0 max-w-2xl">
-            {(!showLyrics || showLyrics.loading) ? (
-              <div className="h-full flex items-center justify-center gap-2 text-sm text-white/60">
-                <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin text-yt-red" fill="none">
-                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
-                  <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                </svg>
-                Loading lyrics…
-              </div>
-            ) : showLyrics.ok ? (
-              <LyricsView
-                ambient
-                synced={showLyrics.synced}
-                plain={showLyrics.text}
-                footer={showLyrics.footer}
-                currentTime={currentTime}
-                getTime={getTime}
-                offset={lyricOffset}
-                onSeek={seek}
-                animation={motionOff ? 'still' : lyricMotion}
-              />
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center text-center gap-2 text-white/50">
-                <svg viewBox="0 0 24 24" className="w-8 h-8" fill="currentColor"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" /></svg>
-                <p className="text-sm">{showLyrics.reason || 'Lyrics not available'}</p>
-              </div>
-            )}
-          </div>
-        )}
+        {artBlock}
 
         <div className="text-center w-full max-w-xl">
           <p className="text-white font-bold text-lg sm:text-2xl truncate">{current.title}</p>
@@ -402,10 +505,7 @@ function FullPlayer({
           <span className="text-[11px] tabular-nums text-white/60 w-10">{fmt(duration)}</span>
         </div>
 
-        <div className="mt-5 flex items-center justify-center gap-6 sm:gap-8">
-          <Btn label="Shuffle" tone="onDark" active={shuffle} onClick={() => setShuffle(s => !s)}>
-            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{Icon.shuffle}</svg>
-          </Btn>
+        <div className="mt-5 flex items-center justify-center gap-8">
           <Btn label="Previous" tone="onDark" onClick={prev}>
             <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor">{Icon.prev}</svg>
           </Btn>
@@ -426,29 +526,9 @@ function FullPlayer({
           <Btn label="Next" tone="onDark" onClick={() => next(false)}>
             <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor">{Icon.next}</svg>
           </Btn>
-          <Btn label={`Repeat: ${repeat}`} tone="onDark" active={repeat !== 'off'} onClick={cycleRepeat}>
-            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">{repeat === 'one' ? Icon.repeatOne : Icon.repeat}</svg>
-          </Btn>
         </div>
 
-        {/* View switch + volume */}
-        <div className="mt-5 flex items-center justify-center gap-4 flex-wrap">
-          <div className="flex items-center gap-1 bg-white/10 rounded-full p-0.5">
-            <button onClick={() => setView('art')} className={tabCls(view === 'art')}>Artwork</button>
-            <button onClick={() => setView('lyrics')} className={tabCls(view === 'lyrics')}>Lyrics</button>
-          </div>
-          <div className="hidden sm:flex items-center gap-2">
-            <Btn label={volume === 0 ? 'Unmute' : 'Mute'} tone="onDark" onClick={() => setVolume(volume === 0 ? 1 : 0)}>
-              <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">{volume === 0 ? Icon.mute : Icon.volume}</svg>
-            </Btn>
-            <input
-              type="range" min="0" max="1" step="0.01" value={volume}
-              onChange={(e) => setVolume(parseFloat(e.target.value))}
-              className="range-minimal range-on-dark w-28"
-              aria-label="Volume"
-            />
-          </div>
-        </div>
+        <div className="mt-5">{optionRow}</div>
       </div>
     </div>
   )
@@ -456,6 +536,12 @@ function FullPlayer({
 
 export default function MiniPlayer() {
   const { settings, updateSetting } = useSettings()
+  const { startDownload } = useDownloads()
+  const apple = settings.musicStyle === 'apple'
+  const [likedIds, setLikedIds] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('kovatube_liked_songs') || '[]')) }
+    catch { return new Set() }
+  })
   const lyricMotion = LYRIC_MOTIONS.some((item) => item.id === settings.lyricAnimation) ? settings.lyricAnimation : 'karaoke'
   const motionOff = !!settings.reduceMotion
   const playedMotion = motionOff ? 'still' : lyricMotion
@@ -466,7 +552,6 @@ export default function MiniPlayer() {
     toggle, next, prev, seek, setVolume, setShuffle, setRepeat, clear,
     getAudioTime,
   } = useQueue()
-  const [expanded, setExpanded] = useState(false)
   const [view, setView] = useState('art') // 'art' | 'lyrics'
   const [ambient, setAmbient] = useState(false)
   const [full, setFull] = useState(false) // full-screen "Now playing" player
@@ -537,7 +622,6 @@ export default function MiniPlayer() {
     if (e.key === 'Escape') {
       if (ambient) setAmbient(false)
       else if (full) setFull(false)
-      else if (expanded) setExpanded(false)
       return
     }
     // Leave app/browser combos (Ctrl+R, Ctrl+F, …) alone.
@@ -760,106 +844,36 @@ export default function MiniPlayer() {
           lyricMotion={lyricMotion}
           setLyricMotion={setLyricMotion}
           motionOff={motionOff}
+          apple={apple}
+          liked={!!(current && likedIds.has(current.videoId || current.id))}
+          onLike={() => {
+            const id = current && (current.videoId || current.id)
+            if (!id) return
+            setLikedIds((prev) => {
+              const next = new Set(prev)
+              if (next.has(id)) next.delete(id)
+              else next.add(id)
+              try { localStorage.setItem('kovatube_liked_songs', JSON.stringify([...next])) } catch { /* ignore */ }
+              return next
+            })
+          }}
+          onDownload={() => {
+            const id = current && (current.videoId || current.id)
+            if (!id) return
+            startDownload({
+              videoId: id,
+              quality: 'audio',
+              format: 'mp3',
+              title: current.title,
+              thumbnail: current.thumbnail,
+              audio: true,
+            })
+          }}
         />
       )}
 
       <div className="fixed bottom-0 left-0 right-0 z-40 animate-fade-in-up">
-      {/* Expanded "Now Playing" sheet */}
-      {expanded && (
-        <div className="miniplayer-panel px-4 pt-5 pb-5 animate-slide-up">
-          <div className="flex flex-col items-center gap-3 max-w-md mx-auto">
-            {view === 'art' ? (
-              current.thumbnail ? (
-                <img
-                  src={current.thumbnail}
-                  alt=""
-                  referrerPolicy="no-referrer"
-                  className="w-56 h-56 rounded-2xl object-cover shadow-2xl animate-scale-in"
-                />
-              ) : (
-                <div className="w-56 h-56 rounded-2xl bg-black/10 dark:bg-white/10" />
-              )
-            ) : (!showLyrics || showLyrics.loading) ? (
-              <div className="w-full h-56 rounded-2xl bg-black/[0.03] dark:bg-white/[0.05] border border-black/5 dark:border-white/10 flex items-center justify-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-                <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin text-yt-red" fill="none">
-                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.3" />
-                  <path d="M21 12a9 9 0 00-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-                </svg>
-                Loading lyrics…
-              </div>
-            ) : showLyrics.ok ? (
-              <LyricsView
-                synced={showLyrics.synced}
-                plain={showLyrics.text}
-                footer={showLyrics.footer}
-                currentTime={currentTime}
-                getTime={getAudioTime}
-                offset={lyricOffset}
-                onSeek={seek}
-                animation={playedMotion}
-              />
-            ) : (
-              <div className="w-full h-56 rounded-2xl bg-black/[0.03] dark:bg-white/[0.05] border border-black/5 dark:border-white/10 flex flex-col items-center justify-center text-center gap-1">
-                <svg viewBox="0 0 24 24" className="w-7 h-7 text-gray-300 dark:text-gray-600" fill="currentColor">
-                  <path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z" />
-                </svg>
-                <p className="text-sm text-gray-500 dark:text-gray-400">{showLyrics.reason || 'Lyrics not available'}</p>
-              </div>
-            )}
-            {view === 'lyrics' && hasSynced && (
-              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
-                <SyncControl offset={lyricOffset} onChange={setLyricOffset} />
-                <LyricMotion value={lyricMotion} onChange={setLyricMotion} disabled={motionOff} />
-              </div>
-            )}
-            <div className="text-center w-full">
-              <p className="font-semibold text-lg truncate">{current.title}</p>
-              <p className="text-sm text-gray-500 dark:text-gray-400 truncate">
-                {current.artist || 'Unknown artist'}{source?.title ? ` • ${source.title}` : ''}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 bg-black/[0.04] dark:bg-white/[0.06] rounded-full p-0.5">
-                <button
-                  onClick={() => { setView('art'); setAmbient(false) }}
-                  className={`px-3.5 py-1 rounded-full text-xs font-medium transition-colors ${view === 'art' && !ambient ? 'bg-white dark:bg-white/15 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}
-                >
-                  Artwork
-                </button>
-                <button
-                  onClick={() => { setView('lyrics'); setAmbient(false) }}
-                  className={`px-3.5 py-1 rounded-full text-xs font-medium transition-colors ${view === 'lyrics' && !ambient ? 'bg-white dark:bg-white/15 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}
-                >
-                  Lyrics
-                </button>
-                <button
-                  onClick={() => setAmbient(true)}
-                  className={`flex items-center gap-1.5 px-3.5 py-1 rounded-full text-xs font-medium transition-colors ${ambient ? 'bg-white dark:bg-white/15 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}`}
-                >
-                  <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="currentColor">
-                    <path d="M12 3l1.6 5.2L19 9.8l-4.3 3.1.9 5.1L12 15.3 8.4 18l.9-5.1L5 9.8l5.4-1.6L12 3z" />
-                  </svg>
-                  Ambient
-                </button>
-              </div>
-              <Btn label="Full screen player" onClick={() => setFull(true)}>
-                <svg viewBox="0 0 24 24" className="w-[18px] h-[18px]" fill="currentColor">
-                  <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
-                </svg>
-              </Btn>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="miniplayer relative">
-        <button
-          onClick={() => setExpanded(e => !e)}
-          className="absolute -top-5 left-1/2 -translate-x-1/2 w-10 h-7 rounded-full miniplayer-handle flex items-center justify-center"
-          aria-label={expanded ? 'Collapse player' : 'Expand player'}
-        >
-          <svg viewBox="0 0 24 24" className={`w-5 h-5 transition-transform duration-300 ${expanded ? 'rotate-180' : ''}`} fill="currentColor">{Icon.chevron}</svg>
-        </button>
 
         {/* Seek line */}
         <div className="absolute top-0 left-0 right-0 h-1 bg-black/5 dark:bg-white/5 group cursor-pointer"
@@ -872,11 +886,19 @@ export default function MiniPlayer() {
         </div>
 
         <div className="flex items-center gap-3 px-3 pt-2 pb-2">
-          {current.thumbnail ? (
-            <img src={current.thumbnail} alt="" referrerPolicy="no-referrer" className="w-11 h-11 rounded-lg object-cover shrink-0" />
-          ) : (
-            <div className="w-11 h-11 rounded-lg bg-black/10 dark:bg-white/10 shrink-0" />
-          )}
+          <button
+            type="button"
+            onClick={() => setFull(true)}
+            aria-label="Open full screen player"
+            title="Full screen"
+            className="w-11 h-11 rounded-lg overflow-hidden shrink-0"
+          >
+            {current.thumbnail ? (
+              <img src={current.thumbnail} alt="" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+            ) : (
+              <span className="block w-full h-full bg-black/10 dark:bg-white/10" />
+            )}
+          </button>
 
           <div className="min-w-0 w-[28%] sm:w-[22%]">
             <p className="text-sm font-medium truncate">{current.title}</p>

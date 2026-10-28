@@ -76,7 +76,7 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 
 ### Downloads & offline
 - **Download** videos/audio, with a fast InnerTube path and a `yt-dlp` fallback.
-- **Music and videos kept apart** — songs land in `~/.config/Kovatube/downloads/music`, videos in `~/.config/Kovatube/downloads/videos` (previously one mixed folder; existing files are tidied into the right one on launch).
+- **Music and videos kept apart** — songs and videos live in separate folders under the app data directory (on an existing Linux install, that is still `~/.config/Kovatube/downloads`).
 - **Separate downloads pages** — **Video Downloads** lists only videos; songs live on **Music Downloads** (also reachable from Music → Downloaded), with playlists, tracks, lyrics and in-progress song downloads.
 - **Playlist & album downloads** — each song saved as MP3 with its lyrics alongside; the playlist shows up as one entry with its songs in order.
 - **Auto-sync playlists** — songs you add to a downloaded playlist later are fetched and downloaded automatically (checked at launch and every 15 minutes, or on demand with **Sync now**). Toggle it per playlist.
@@ -107,7 +107,7 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 
 ### Prerequisites
 - **Node.js** 18+ and npm
-- **`yt-dlp`** on your `PATH` (used for downloads and as a stream fallback)
+- **`yt-dlp`** and **`ffmpeg`** on your `PATH`, or placed in `bin/` (`yt-dlp.exe` and `ffmpeg.exe` on Windows)
   ```bash
   pipx install yt-dlp   # or: sudo pip install yt-dlp
   ```
@@ -120,11 +120,25 @@ npx vite build
 ./node_modules/electron/dist/electron .
 ```
 
-### Build the Linux AppImage
+### Desktop packages
 ```bash
-npx electron-builder --linux AppImage
-# → release/Kovatube-1.0.0-x86_64.AppImage
+npm run electron:build:linux   # release/Kovatube-1.0.0-x86_64.AppImage
+npm run electron:build:win     # Windows NSIS installer
+npm run electron:build:mac     # dmg + zip; run this on a Mac
 ```
+
+On Linux, the NSIS installer needs Wine (`sudo dnf install wine`). Without Wine, this machine can still pack a portable Windows folder:
+
+```bash
+npx electron-builder --win zip --x64 -c.win.signAndEditExecutable=false
+```
+
+GitHub Actions (`.github/workflows/desktop.yml`) builds the AppImage, the Windows installer, and the Mac disk image when you push a `v*` tag or run the workflow by hand. Add repository secrets `CSC_LINK` and `CSC_KEY_PASSWORD` (an Apple Developer certificate) so the Mac job is signed. Without those secrets the Mac build is unsigned and Gatekeeper warns. An unsigned Windows installer runs, with a SmartScreen warning.
+
+ffmpeg is GPL or LGPL depending on the build. Include that license if you ship an ffmpeg binary inside `bin/`.
+
+### Android
+This repository is the desktop app. Electron does not run on Android, and playback here depends on launching `yt-dlp` and `ffmpeg`. A phone version would be a separate client, distributed as a sideloaded APK rather than a Play Store app. That work starts after the Mac and Windows packages.
 
 ---
 

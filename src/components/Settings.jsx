@@ -49,9 +49,14 @@ export default function Settings() {
   // Real on-disk download folders (songs and videos are kept apart), shown in
   // the Downloads section below.
   const [dlPaths, setDlPaths] = useState(null)
+  const [configDir, setConfigDir] = useState('')
   useEffect(() => {
     if (!window.electronAPI?.getDownloadPaths) return
     window.electronAPI.getDownloadPaths().then(setDlPaths).catch(() => {})
+  }, [])
+  useEffect(() => {
+    if (!window.electronAPI?.getAppPath) return
+    window.electronAPI.getAppPath().then((dir) => { if (dir) setConfigDir(dir) }).catch(() => {})
   }, [])
 
   // Keep the per-source usage in the limit row accurate while this page is open.
@@ -147,7 +152,7 @@ export default function Settings() {
             <h2 className="text-xs text-gray-400 dark:text-gray-500">Appearance</h2>
             <SettingRow
               title="Theme"
-              description="Light, Dark, or pure black AMOLED"
+              description="Light, Dark, AMOLED, or Material"
               icon={
                 <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
@@ -162,6 +167,21 @@ export default function Settings() {
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
                 <option value="amoled">AMOLED Black</option>
+                <option value="material">Material</option>
+              </select>
+            </SettingRow>
+
+            <SettingRow
+              title="Music look"
+              description="Apple Music opens a large now-playing screen, closer to the phone player"
+            >
+              <select
+                value={settings.musicStyle || 'standard'}
+                onChange={(e) => updateSetting('musicStyle', e.target.value)}
+                className="px-3 py-2 rounded-lg bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm focus:outline-none focus:ring-2 focus:ring-yt-red/50 hover:border-yt-red/40"
+              >
+                <option value="standard">Standard</option>
+                <option value="apple">Apple Music</option>
               </select>
             </SettingRow>
 
@@ -308,7 +328,7 @@ export default function Settings() {
               description={
                 dlPaths
                   ? `Music and videos are kept apart. Videos: ${dlPaths.videos} · Music: ${dlPaths.music}`
-                  : 'Music and videos are kept in separate folders inside ~/.config/Kovatube/downloads'
+                  : 'Music and videos are kept in separate folders inside the app data directory'
               }
               icon={
                 <svg className="w-5 h-5 text-yt-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -436,7 +456,7 @@ export default function Settings() {
           </section>
 
           <p className="text-xs text-gray-400 dark:text-gray-500 text-center">
-            Settings are saved automatically to ~/.config/Kovatube/settings.json
+            Settings are saved automatically{configDir ? ` to ${configDir.replace(/[\\/]$/, '')}${configDir.includes('\\') ? '\\' : '/'}settings.json` : ''}
           </p>
         </>
       )}
