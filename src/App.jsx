@@ -30,6 +30,7 @@ import { QueueProvider, useQueue } from './context/QueueContext'
 import { LikedSongsProvider } from './context/LikedSongsContext'
 import { NetworkProvider, useNetwork } from './context/NetworkContext'
 import MiniPlayer from './components/MiniPlayer'
+import { UpdateProvider, UpdateBanner } from './components/UpdateNotice'
 import OfflineGate from './components/OfflineGate'
 
 // A thin accent progress line pinned to the very top of the window (above the
@@ -123,12 +124,14 @@ function Layout() {
 
   return (
     <WelcomeReplayProvider openWelcome={() => setWelcomeOpen(true)}>
+    <UpdateProvider>
     <div className={`flex h-screen min-h-0 bg-white dark:bg-yt-dark ${topNav ? 'flex-col' : ''} ${liftSidebar ? 'sidebar-lift pb-16' : ''}`}>
       <TopProgressBar />
       {!topNav && <Sidebar />}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {topNav && <Sidebar />}
         <HeaderBar />
+        <UpdateBanner />
         {showIntro && !welcomeOpen && <IntroLoader />}
         <AnimatedRoutes />
         <OfflineGate />
@@ -136,6 +139,7 @@ function Layout() {
       </div>
       {welcomeOpen && <WelcomeWizard onDone={() => setWelcomeOpen(false)} />}
     </div>
+    </UpdateProvider>
     </WelcomeReplayProvider>
   )
 }

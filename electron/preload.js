@@ -2,6 +2,19 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getAppPath: () => ipcRenderer.invoke('get-app-path'),
+  appVersion: () => ipcRenderer.invoke('app-version'),
+  checkForUpdate: () => ipcRenderer.invoke('update-check'),
+  updateInstall: () => ipcRenderer.invoke('update-install'),
+  onUpdateAvailable: (cb) => { ipcRenderer.on('update-available', (_e, data) => cb(data)) },
+  onUpdateProgress: (cb) => { ipcRenderer.on('update-progress', (_e, data) => cb(data)) },
+  onUpdateDownloaded: (cb) => { ipcRenderer.on('update-downloaded', (_e, data) => cb(data)) },
+  onUpdateError: (cb) => { ipcRenderer.on('update-error', (_e, data) => cb(data)) },
+  removeUpdateListeners: () => {
+    ipcRenderer.removeAllListeners('update-available')
+    ipcRenderer.removeAllListeners('update-progress')
+    ipcRenderer.removeAllListeners('update-downloaded')
+    ipcRenderer.removeAllListeners('update-error')
+  },
   getDownloadsPath: () => ipcRenderer.invoke('get-downloads-path'),
   getDownloadPaths: () => ipcRenderer.invoke('get-download-paths'),
   getDownloadsList: () => ipcRenderer.invoke('get-downloads-list'),

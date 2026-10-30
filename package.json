@@ -20,6 +20,7 @@
     "@braccato/core": "^1.16.13",
     "@braccato/parsers": "^0.4.0",
     "@kawarp/core": "^1.3.1",
+    "electron-updater": "^6.8.11",
     "hls.js": "^1.7.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -46,7 +47,23 @@
     },
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "node_modules/electron-updater/**/*",
+      "node_modules/builder-util-runtime/**/*",
+      "node_modules/fs-extra/**/*",
+      "node_modules/graceful-fs/**/*",
+      "node_modules/jsonfile/**/*",
+      "node_modules/universalify/**/*",
+      "node_modules/js-yaml/**/*",
+      "node_modules/argparse/**/*",
+      "node_modules/sax/**/*",
+      "node_modules/lazy-val/**/*",
+      "node_modules/lodash.escaperegexp/**/*",
+      "node_modules/lodash.isequal/**/*",
+      "node_modules/semver/**/*",
+      "node_modules/tiny-typed-emitter/**/*",
+      "node_modules/debug/**/*",
+      "node_modules/ms/**/*"
     ],
     "linux": {
       "target": [
@@ -106,6 +123,11 @@
       }
     ],
     "compression": "maximum",
-    "removePackageScripts": true
+    "removePackageScripts": true,
+    "publish": {
+      "provider": "github",
+      "owner": "98Reyansh",
+      "repo": "Kovatube"
+    }
   }
 }

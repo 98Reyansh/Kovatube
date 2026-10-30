@@ -2871,8 +2871,12 @@ function parseLrc(lrc) {
     const wre = /<(\d{1,3}):(\d{1,2}(?:\.\d{1,3})?)>\s*([^<]*)/g
     let wm
     while ((wm = wre.exec(body))) {
-      const w = wm[3].trim()
-      if (w) words.push({ t: parseInt(wm[1], 10) * 60 + parseFloat(wm[2]), w })
+      const raw = wm[3]
+      const w = raw.trim()
+      if (!w) continue
+      // The space after a word lives in the file. Keep it, or offline playback
+      // glues "I done" into "Idone".
+      words.push({ t: parseInt(wm[1], 10) * 60 + parseFloat(wm[2]), w, sep: /\s$/.test(raw) ? ' ' : '' })
     }
     const text = body.replace(/<\d{1,3}:\d{1,2}(?:\.\d{1,3})?>/g, '').trim()
     for (const s of stamps) {
@@ -3366,7 +3370,8 @@ function syncedToLrc(lines, meta = {}) {
       for (const w of words) {
         const word = clean(w.w)
         if (!word) continue
-        seg += `<${stamp(w.t)}>${word} `
+        const gap = w.sep == null ? ' ' : w.sep
+        seg += `<${stamp(w.t)}>${word}${gap}`
       }
       body.push(`[${stamp(line.t)}]${seg.trim()}`)
     } else if (clean(line.text)) {
@@ -5923,6 +5928,13 @@ async function coverImageDataUrl(url) {
 
 function setupIPC() {
   ipcMain.handle('get-app-path', () => CONFIG_DIR)
+  ipcMain.handle('app-version', () => app.getVersion())
+  ipcMain.handle('update-check', () => checkForAppUpdate())
+  ipcMain.handle('update-install', () => startAppUpdate().catch((e) => {
+    console.warn('[Update] install', e.message)
+    updateState = { ...updateState, status: 'error', reason: 'Could not start the update' }
+    return { ok: false, ...updateState }
+  }))
   ipcMain.handle('get-downloads-path', () => DOWNLOADS_DIR)
 
   // The three folders the renderer shows in Settings: the base downloads dir and
@@ -6381,6 +6393,139 @@ function setupIPC() {
   })
 }
 
+// ─── Updates ─────────────────────────────────────────────────────────────────
+// Packaged builds ask GitHub for a newer release. Nothing is downloaded until
+// the user chooses Update. Dev sessions can still check on demand, but they
+// never prompt on their own.
+
+const RELEASES_LATEST = 'https://api.github.com/repos/98Reyansh/Kovatube/releases/latest'
+const { autoUpdater: electronAutoUpdater } = require('electron-updater')
+let updateState = {
+  current: '',
+  latest: '',
+  available: false,
+  status: 'idle',
+  reason: '',
+}
+let autoUpdater = null
+
+function compareVersions(a, b) {
+  const parts = (v) => String(v || '').replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const pa = parts(a)
+  const pb = parts(b)
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return 1
+    if (pa[i] < pb[i]) return -1
+  }
+  return 0
+}
+
+function sendUpdate(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+}
+
+function publishUpdateState() {
+  updateState.current = app.getVersion()
+  if (updateState.available) sendUpdate('update-available', updateState)
+  return updateState
+}
+
+function fetchLatestRelease() {
+  const read = (url, redirects = 0) => new Promise((resolve, reject) => {
+    const lib = url.startsWith('https:') ? https : http
+    const req = lib.get(url, {
+      headers: { 'User-Agent': 'Kovatube', Accept: 'application/vnd.github+json' },
+    }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects < 3) {
+        res.resume()
+        read(new URL(res.headers.location, url).href, redirects + 1).then(resolve, reject)
+        return
+      }
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        if (res.statusCode !== 200) { reject(new Error('http ' + res.statusCode)); return }
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) }
+        catch (e) { reject(e) }
+      })
+    })
+    req.on('error', reject)
+    req.setTimeout(12000, () => req.destroy(new Error('timeout')))
+  })
+  return read(RELEASES_LATEST)
+}
+
+async function checkForAppUpdate() {
+  updateState.current = app.getVersion()
+  if (!app.isPackaged) {
+    try {
+      const rel = await fetchLatestRelease()
+      const latest = String(rel.tag_name || '').replace(/^v/, '')
+      const available = !!latest && compareVersions(latest, updateState.current) > 0
+      updateState = { current: updateState.current, latest, available, status: available ? 'available' : 'current', reason: '' }
+    } catch (e) {
+      console.warn('[Update]', e.message)
+      updateState = { ...updateState, status: 'error', reason: 'Could not check for updates' }
+      return { ok: false, ...updateState }
+    }
+    publishUpdateState()
+    return { ok: true, ...updateState }
+  }
+  if (!autoUpdater) return { ok: false, ...updateState, status: 'error', reason: 'Updater unavailable' }
+  try {
+    const result = await autoUpdater.checkForUpdates()
+    const latest = result && result.updateInfo && result.updateInfo.version
+    if (latest) {
+      const available = compareVersions(latest, app.getVersion()) > 0
+      updateState = { current: app.getVersion(), latest, available, status: available ? 'available' : 'current', reason: '' }
+    }
+  } catch (e) {
+    console.warn('[Update]', e.message)
+    updateState = { ...updateState, current: app.getVersion(), status: 'error', reason: 'Could not check for updates' }
+    return { ok: false, ...updateState }
+  }
+  publishUpdateState()
+  return { ok: true, ...updateState }
+}
+
+function setupUpdater() {
+  if (!app.isPackaged) return
+  autoUpdater = electronAutoUpdater
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.on('error', (err) => {
+    const reason = (err && err.message) || 'Update failed'
+    if (/no update/i.test(reason)) return
+    console.warn('[Update]', reason)
+    updateState = { ...updateState, status: 'error', reason: 'Could not check for updates' }
+    sendUpdate('update-error', updateState)
+  })
+  autoUpdater.on('download-progress', (p) => {
+    sendUpdate('update-progress', { percent: Math.round(p.percent || 0) })
+  })
+  autoUpdater.on('update-downloaded', () => {
+    updateState = { ...updateState, status: 'downloaded' }
+    sendUpdate('update-downloaded', updateState)
+    autoUpdater.quitAndInstall(false, true)
+  })
+  setTimeout(() => { checkForAppUpdate().catch(() => {}) }, 8000)
+}
+
+async function startAppUpdate() {
+  if (process.platform === 'darwin' || !app.isPackaged || !autoUpdater) {
+    const version = String(updateState.latest || '').replace(/^v/, '')
+    const url = version
+      ? `https://github.com/98Reyansh/Kovatube/releases/tag/v${version}`
+      : 'https://github.com/98Reyansh/Kovatube/releases/latest'
+    await shell.openExternal(url)
+    return { ok: true, opened: true }
+  }
+  updateState = { ...updateState, status: 'downloading' }
+  sendUpdate('update-progress', { percent: 0 })
+  await autoUpdater.downloadUpdate()
+  return { ok: true, downloading: true }
+}
+
 // ─── App Lifecycle ───────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -6407,6 +6552,7 @@ app.whenReady().then(async () => {
   setupSession()
   setupFileProtocol()
   setupIPC()
+  setupUpdater()
   try { await startStaticServer() } catch (e) { console.error('[App] static server failed', e.message) }
   createWindow()
   startPlaylistSyncScheduler()

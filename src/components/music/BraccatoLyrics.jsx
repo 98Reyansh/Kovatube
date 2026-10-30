@@ -44,6 +44,7 @@ function linesToLyrics(lines) {
       durationMs: Math.max(80, end - start),
       words: text,
     }
+    const spacedLine = /\s/.test(text)
     if (words.length) {
       lyric.parts = words.map((word, j) => {
         const ws = Math.round(Number(word.t) * 1000)
@@ -51,8 +52,13 @@ function linesToLyrics(lines) {
         const we = word.end != null
           ? Math.round(Number(word.end) * 1000)
           : (nxt ? Math.round(Number(nxt.t) * 1000) : ws + 180)
-        return { startTimeMs: ws, durationMs: Math.max(30, we - ws), words: String(word.w || '') }
-      }).filter((part) => part.words)
+        let token = String(word.w || '')
+        const nextToken = nxt ? String(nxt.w || '') : ''
+        const sep = word.sep != null ? word.sep : (spacedLine ? ' ' : '')
+        const glue = !nextToken || /^\s/.test(nextToken) || /^[,.;:!?)}\]'’]/.test(nextToken)
+        if (sep && nxt && !glue && token && !/\s$/.test(token)) token += sep
+        return { startTimeMs: ws, durationMs: Math.max(30, we - ws), words: token }
+      }).filter((part) => part.words.trim())
     }
     if (text || (lyric.parts && lyric.parts.length)) out.push(lyric)
   }
