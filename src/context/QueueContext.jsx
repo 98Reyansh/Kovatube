@@ -71,6 +71,16 @@ export function QueueProvider({ children }) {
   const tokenRef = useRef(0)          // guards against out-of-order resolves
   const retriedRef = useRef(new Set()) // audio srcs already retried after an error
   const prefetchedRef = useRef(new Set())
+  const wantPlayRef = useRef(false)
+  const recoveringRef = useRef(false)
+  const stallCountRef = useRef(0)
+  const playStartedRef = useRef(0)
+
+  const setWantPlay = (on) => {
+    wantPlayRef.current = on
+    const pending = window.electronAPI?.audioKeepalive?.(on)
+    if (pending && typeof pending.catch === 'function') pending.catch(() => {})
+  }
   const playAtRef = useRef(() => {})
   const nextRef = useRef(() => {})
   const prevRef = useRef(() => {})
@@ -98,6 +108,9 @@ export function QueueProvider({ children }) {
     const id = trackId(track)
 
     const token = ++tokenRef.current
+    stallCountRef.current = 0
+    playStartedRef.current = Date.now()
+    setWantPlay(true)
     setIndex(i)
     setCurrentTime(0)
     setDuration(0)
@@ -110,7 +123,13 @@ export function QueueProvider({ children }) {
       try {
         if (audio.src !== track.localUrl) audio.src = track.localUrl
         audio.currentTime = 0
-        try { await audio.play() } catch { /* user gesture normally present */ }
+        try { await audio.play() } catch (e) {
+          if (token !== tokenRef.current) return
+          console.warn('[audio] play() rejected', e && e.name)
+          setPlaying(false)
+          setLoading(false)
+          return
+        }
         if (token !== tokenRef.current) return
         setPlaying(true)
         console.log(`[audio-timing] ${id} local file`)
@@ -136,7 +155,13 @@ export function QueueProvider({ children }) {
       }
       audio.src = res.audioUrl
       audio.currentTime = 0
-      try { await audio.play() } catch { /* user gesture normally present */ }
+      try { await audio.play() } catch (e) {
+        if (token !== tokenRef.current) return
+        console.warn('[audio] play() rejected', e && e.name)
+        setPlaying(false)
+        setLoading(false)
+        return
+      }
       if (token !== tokenRef.current) return
       setPlaying(true)
       console.log(`[audio-timing] ${id} resolved+started in ${Math.round(performance.now() - t0)}ms (${res.source || '?'})`)
@@ -190,8 +215,8 @@ export function QueueProvider({ children }) {
     const audio = audioRef.current
     if (!audio) return
     if (!audio.src) { playAtRef.current(stateRef.current.index, stateRef.current.tracks); return }
-    if (audio.paused) audio.play().catch(() => {})
-    else audio.pause()
+    if (audio.paused) { setWantPlay(true); audio.play().catch(() => {}) }
+    else { setWantPlay(false); audio.pause() }
   }, [])
 
   const seek = useCallback((t) => {
@@ -218,6 +243,7 @@ export function QueueProvider({ children }) {
 
   const stop = useCallback(() => {
     const audio = audioRef.current
+    setWantPlay(false)
     if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load() }
     tokenRef.current++
     setPlaying(false)
@@ -248,10 +274,70 @@ export function QueueProvider({ children }) {
     })
   }, [])
 
+  // A googlevideo URL can stall or 403 halfway through a song without a useful
+  // error. Fetch a fresh deciphered URL and continue from the same second.
+  const recoverAudio = async (reason) => {
+    const audio = audioRef.current
+    const state = stateRef.current
+    const track = state.tracks[state.index]
+    if (!audio || !track || !wantPlayRef.current || recoveringRef.current) return
+    stallCountRef.current += 1
+    if (stallCountRef.current > 2) {
+      console.warn('[audio] gave up after repeated stalls')
+      setWantPlay(false)
+      setLoading(false)
+      setError('Playback stalled')
+      setTimeout(() => nextRef.current(true), 400)
+      return
+    }
+    recoveringRef.current = true
+    const at = audio.currentTime || 0
+    const id = trackId(track)
+    console.warn(`[audio] ${reason} at ${at.toFixed(1)}s, reloading`)
+    setLoading(true)
+    try {
+      if (track.localUrl) {
+        if (audio.paused) await audio.play()
+        return
+      }
+      const res = await window.electronAPI?.ytAudioStream?.(id, { fresh: true })
+      if (!wantPlayRef.current) return
+      if (!res || !res.ok || !res.audioUrl) {
+        setError((res && res.reason) || 'Playback stalled')
+        setLoading(false)
+        return
+      }
+      const token = ++tokenRef.current
+      audio.src = res.audioUrl
+      await new Promise((resolve) => {
+        const done = () => { audio.removeEventListener('canplay', done); audio.removeEventListener('error', done); resolve() }
+        audio.addEventListener('canplay', done)
+        audio.addEventListener('error', done)
+      })
+      if (token !== tokenRef.current || !wantPlayRef.current) return
+      const dur = audio.duration
+      if (at > 0.5 && Number.isFinite(dur) && dur > 0) audio.currentTime = Math.min(at, Math.max(0, dur - 1))
+      await audio.play()
+      setPlaying(true)
+      setError(null)
+    } catch (e) {
+      console.warn('[audio] reload failed', e && (e.message || e.name))
+      setLoading(false)
+    } finally {
+      recoveringRef.current = false
+      playStartedRef.current = Date.now()
+    }
+  }
+
   // ── Audio element event wiring ───────────────────────────────────────────
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
+    // Keep the element in the document so Chromium does not suspend it when
+    // the window is in the background.
+    audio.setAttribute('playsinline', '')
+    audio.style.display = 'none'
+    if (!audio.isConnected) document.body.appendChild(audio)
 
     const onTime = () => {
       setCurrentTime(audio.currentTime || 0)
@@ -275,24 +361,42 @@ export function QueueProvider({ children }) {
       // Tell the video player to stand down.
       window.dispatchEvent(new Event('yt-music-play'))
     }
-    const onPause = () => setPlaying(false)
+    const onPause = () => {
+      setPlaying(false)
+      if (!wantPlayRef.current || recoveringRef.current) return
+      const dur = audio.duration || 0
+      if (audio.ended || (dur && audio.currentTime >= dur - 0.25)) return
+      audio.play().catch(() => recoverAudio('paused'))
+    }
     const onWaiting = () => setLoading(true)
     const onCanPlay = () => setLoading(false)
-    const onEnded = () => nextRef.current(true)
-    const onError = () => {
-      setLoading(false)
-      const state = stateRef.current
-      const track = state.tracks[state.index]
-      const src = audio.src
-      // A googlevideo URL can expire mid-playback; re-resolve once, then skip.
-      if (track && src && !retriedRef.current.has(src)) {
-        retriedRef.current.add(src)
-        playAtRef.current(state.index, state.tracks)
-      } else {
-        setError('Playback error')
-        setTimeout(() => nextRef.current(true), 400)
-      }
+    const onEnded = () => {
+      setWantPlay(false)
+      nextRef.current(true)
     }
+    const onError = () => {
+      if (recoveringRef.current || !wantPlayRef.current) return
+      setLoading(false)
+      recoverAudio('error')
+    }
+
+    let lastT = 0
+    let lastAdvance = Date.now()
+    const watchdog = setInterval(() => {
+      if (!wantPlayRef.current || recoveringRef.current || audio.ended) return
+      if (Date.now() - playStartedRef.current < 4000) return
+      const t = audio.currentTime || 0
+      if (!audio.paused && Math.abs(t - lastT) > 0.2) {
+        lastT = t
+        lastAdvance = Date.now()
+        if (t > 3) stallCountRef.current = 0
+        return
+      }
+      if (audio.readyState < 2 && Date.now() - playStartedRef.current < 12000) return
+      if (Date.now() - lastAdvance < 6000) return
+      lastAdvance = Date.now()
+      recoverAudio(audio.paused ? 'paused' : 'stalled')
+    }, 1000)
 
     audio.addEventListener('timeupdate', onTime)
     audio.addEventListener('durationchange', onDur)
@@ -304,6 +408,8 @@ export function QueueProvider({ children }) {
     audio.addEventListener('ended', onEnded)
     audio.addEventListener('error', onError)
     return () => {
+      clearInterval(watchdog)
+      if (audio.parentNode) audio.parentNode.removeChild(audio)
       audio.removeEventListener('timeupdate', onTime)
       audio.removeEventListener('durationchange', onDur)
       audio.removeEventListener('loadedmetadata', onDur)
@@ -319,7 +425,7 @@ export function QueueProvider({ children }) {
   // Pause music when a video starts; pause video-facing state is handled in
   // VideoDetail, which listens for 'yt-music-play'.
   useEffect(() => {
-    const onVideoPlay = () => { audioRef.current?.pause() }
+    const onVideoPlay = () => { setWantPlay(false); audioRef.current?.pause() }
     window.addEventListener('yt-video-play', onVideoPlay)
     return () => window.removeEventListener('yt-video-play', onVideoPlay)
   }, [])
@@ -329,8 +435,8 @@ export function QueueProvider({ children }) {
     if (!('mediaSession' in navigator)) return
     const ms = navigator.mediaSession
     try {
-      ms.setActionHandler('play', () => audioRef.current?.play().catch(() => {}))
-      ms.setActionHandler('pause', () => audioRef.current?.pause())
+      ms.setActionHandler('play', () => { setWantPlay(true); audioRef.current?.play().catch(() => {}) })
+      ms.setActionHandler('pause', () => { setWantPlay(false); audioRef.current?.pause() })
       ms.setActionHandler('previoustrack', () => prevRef.current())
       ms.setActionHandler('nexttrack', () => nextRef.current(false))
     } catch { /* unsupported */ }

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage, net, Notification, nativeImage } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage, net, Notification, nativeImage, powerSaveBlocker } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -3722,10 +3722,19 @@ async function getMusicLibrary() {
 // ── Audio-only stream resolution (no ffmpeg) ────────────────────────────────
 // getMediaUrls already races innertube vs yt-dlp and caches by videoId; for
 // music we only need the audio URL, which plays directly.
-async function getAudioStream(videoId) {
+function dropStreamCache(videoId) {
+  for (const key of [...streamUrlCache.keys()]) {
+    if (key.startsWith(`${videoId}|`)) streamUrlCache.delete(key)
+  }
+}
+
+async function getAudioStream(videoId, opts = {}) {
   if (!videoId) return { ok: false, reason: 'No video ID' }
+  // A stalled googlevideo URL stays in the cache for hours. Drop it and ask
+  // yt-dlp, whose deciphered URL keeps playing past the point the fast one dies.
+  if (opts.fresh) dropStreamCache(videoId)
   // Songs should stay in the language they were recorded in, not an English dub.
-  const r = await getMediaUrls(videoId, 'auto', { preferEnglish: false })
+  const r = await getMediaUrls(videoId, 'auto', { preferEnglish: false, forceYtDlp: !!opts.fresh })
   if (!r || !r.ok || !r.audioUrl) return { ok: false, reason: (r && r.reason) || 'No audio stream' }
   return { ok: true, audioUrl: r.audioUrl, source: r.source || 'unknown' }
 }
@@ -5755,7 +5764,7 @@ function setupSession() {
   session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['*://*.youtube.com/*', '*://*.ytimg.com/*', '*://*.googlevideo.com/*'] }, (details, callback) => {
     const headers = details.requestHeaders
     headers['User-Agent'] = CHROME_UA
-    if (details.url.includes('/embed/') || details.url.includes('/watch')) {
+    if (details.url.includes('googlevideo.com') || details.url.includes('/embed/') || details.url.includes('/watch')) {
       headers['Referer'] = 'https://www.youtube.com/'
     }
     callback({ requestHeaders: headers })
@@ -5770,6 +5779,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
       hardwareAcceleration: true,
       webgl: true,
       allowRunningInsecureContent: false,
@@ -6230,9 +6240,23 @@ function setupIPC() {
   })
 
   // Audio-only stream URL for the music player (no ffmpeg relay).
-  ipcMain.handle('yt-audio-stream', async (_e, videoId) => {
-    console.log('[IPC] yt-audio-stream:', videoId)
-    try { return await getAudioStream(videoId) } catch (e) { return { ok: false, reason: e.message } }
+  ipcMain.handle('yt-audio-stream', async (_e, videoId, opts) => {
+    const fresh = !!(opts && opts.fresh)
+    console.log('[IPC] yt-audio-stream:', videoId, fresh ? '(fresh)' : '')
+    try { return await getAudioStream(videoId, { fresh }) } catch (e) { return { ok: false, reason: e.message } }
+  })
+
+  let audioKeepAliveId = 0
+  ipcMain.handle('audio-keepalive', (_e, on) => {
+    if (on) {
+      if (!audioKeepAliveId || !powerSaveBlocker.isStarted(audioKeepAliveId)) {
+        audioKeepAliveId = powerSaveBlocker.start('prevent-app-suspension')
+      }
+      return true
+    }
+    if (audioKeepAliveId && powerSaveBlocker.isStarted(audioKeepAliveId)) powerSaveBlocker.stop(audioKeepAliveId)
+    audioKeepAliveId = 0
+    return false
   })
 
   ipcMain.handle('yt-audio-prewarm', async (_e, videoId) => {

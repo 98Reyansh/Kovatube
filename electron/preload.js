@@ -61,7 +61,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ytMusicLikedIds: () => ipcRenderer.invoke('yt-music-liked-ids'),
   ytMusicRate: (args) => ipcRenderer.invoke('yt-music-rate', args),
   ytMusicLyrics: (args) => ipcRenderer.invoke('yt-music-lyrics', args),
-  ytAudioStream: (videoId) => ipcRenderer.invoke('yt-audio-stream', videoId),
+  ytAudioStream: (videoId, opts) => ipcRenderer.invoke('yt-audio-stream', videoId, opts),
+  audioKeepalive: (on) => ipcRenderer.invoke('audio-keepalive', !!on),
   ytAudioPrewarm: (videoId) => ipcRenderer.invoke('yt-audio-prewarm', videoId),
 
   // Settings
