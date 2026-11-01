@@ -2,6 +2,19 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getAppPath: () => ipcRenderer.invoke('get-app-path'),
+  appVersion: () => ipcRenderer.invoke('app-version'),
+  checkForUpdate: () => ipcRenderer.invoke('update-check'),
+  updateInstall: () => ipcRenderer.invoke('update-install'),
+  onUpdateAvailable: (cb) => { ipcRenderer.on('update-available', (_e, data) => cb(data)) },
+  onUpdateProgress: (cb) => { ipcRenderer.on('update-progress', (_e, data) => cb(data)) },
+  onUpdateDownloaded: (cb) => { ipcRenderer.on('update-downloaded', (_e, data) => cb(data)) },
+  onUpdateError: (cb) => { ipcRenderer.on('update-error', (_e, data) => cb(data)) },
+  removeUpdateListeners: () => {
+    ipcRenderer.removeAllListeners('update-available')
+    ipcRenderer.removeAllListeners('update-progress')
+    ipcRenderer.removeAllListeners('update-downloaded')
+    ipcRenderer.removeAllListeners('update-error')
+  },
   getDownloadsPath: () => ipcRenderer.invoke('get-downloads-path'),
   getDownloadPaths: () => ipcRenderer.invoke('get-download-paths'),
   getDownloadsList: () => ipcRenderer.invoke('get-downloads-list'),
@@ -24,6 +37,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ytSubscribe: (channel) => ipcRenderer.invoke('yt-subscribe', channel),
   ytUnsubscribe: (channel) => ipcRenderer.invoke('yt-unsubscribe', channel),
   ytVideoInfo: (videoId) => ipcRenderer.invoke('yt-video-info', videoId),
+  ytComments: (args) => ipcRenderer.invoke('yt-comments', args),
+  ytCommentCreate: (args) => ipcRenderer.invoke('yt-comment-create', args),
   ytChannel: (channelName) => ipcRenderer.invoke('yt-channel', channelName),
   ytChannelAvatar: (channelName) => ipcRenderer.invoke('yt-channel-avatar', channelName),
   ytChannelMore: (token, channelName) => ipcRenderer.invoke('yt-channel-more', token, channelName),
@@ -48,7 +63,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ytMusicLikedIds: () => ipcRenderer.invoke('yt-music-liked-ids'),
   ytMusicRate: (args) => ipcRenderer.invoke('yt-music-rate', args),
   ytMusicLyrics: (args) => ipcRenderer.invoke('yt-music-lyrics', args),
-  ytAudioStream: (videoId) => ipcRenderer.invoke('yt-audio-stream', videoId),
+  ytAudioStream: (videoId, opts) => ipcRenderer.invoke('yt-audio-stream', videoId, opts),
+  audioKeepalive: (on) => ipcRenderer.invoke('audio-keepalive', !!on),
   ytAudioPrewarm: (videoId) => ipcRenderer.invoke('yt-audio-prewarm', videoId),
 
   // Settings

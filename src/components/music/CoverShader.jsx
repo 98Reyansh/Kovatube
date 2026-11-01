@@ -9,14 +9,21 @@ function tapAudio(audio) {
   if (audioTap && audioTap.audio === audio) return audioTap.failed ? null : audioTap
   if (audioTap) return null
   try {
+    // captureStream leaves the song on the normal output. Routing the element
+    // itself through an AudioContext silences it whenever that context sleeps.
+    if (typeof audio.captureStream !== 'function') throw new Error('no captureStream')
+    const stream = audio.captureStream()
     const ctx = new AudioContext()
-    const source = ctx.createMediaElementSource(audio)
+    const source = ctx.createMediaStreamSource(stream)
     const analyser = ctx.createAnalyser()
     analyser.fftSize = 512
     analyser.smoothingTimeConstant = 0.8
     source.connect(analyser)
-    analyser.connect(ctx.destination)
+    const resume = () => { if (ctx.state === 'suspended') ctx.resume().catch(() => {}) }
+    audio.addEventListener('play', resume)
+    ctx.addEventListener('statechange', resume)
     audioTap = { audio, ctx, analyser, bins: new Uint8Array(analyser.frequencyBinCount) }
+    resume()
     return audioTap
   } catch {
     audioTap = { audio, failed: true }

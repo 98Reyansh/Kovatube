@@ -4,6 +4,7 @@ import { useReplayWelcome } from './WelcomeWizard'
 import { useToast } from '../context/ToastContext'
 import { useAuth } from '../context/AuthContext'
 import { useSmartDownloads } from '../context/SmartDownloadContext'
+import { useAppUpdate } from './UpdateNotice'
 
 function Toggle({ checked, onChange, disabled }) {
   return (
@@ -45,6 +46,7 @@ export default function Settings() {
   const { addToast } = useToast()
   const { signedIn, account, signingIn, signIn, signOut } = useAuth()
   const { enabled: smartDlEnabled, clipboard: smartDlClipboard, counts, toggleSmartDownload, toggleClipboard, refreshStatus, resetCounts } = useSmartDownloads()
+  const { state: updateState, checking: updateChecking, progress: updateProgress, check: checkUpdate, install: installUpdate } = useAppUpdate()
 
   // Real on-disk download folders (songs and videos are kept apart), shown in
   // the Downloads section below.
@@ -90,6 +92,53 @@ export default function Settings() {
         </div>
       ) : (
         <>
+          <section className="space-y-3">
+            <h2 className="text-xs text-gray-400 dark:text-gray-500">App</h2>
+            <SettingRow
+              title={`Kovatube ${updateState?.current || '1.1.0'}`}
+              description={
+                updateState?.status === 'error'
+                  ? 'Could not check for updates'
+                  : updateState?.available
+                    ? `Version ${updateState.latest} is available`
+                    : updateState?.status === 'current'
+                      ? "You're on the latest version"
+                      : 'Checks GitHub for a newer release'
+              }
+            >
+              {updateState?.available ? (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const result = await installUpdate()
+                    if (result && result.opened) addToast('info', 'Opening the download page', 3000)
+                    else if (result && !result.ok) addToast('error', 'Could not start the update', 3000)
+                  }}
+                  disabled={updateState.status === 'downloading'}
+                  className="px-4 py-2 text-sm font-medium rounded-lg bg-yt-red text-white hover:bg-yt-red-hover transition-colors disabled:opacity-60"
+                >
+                  {updateState.status === 'downloading'
+                    ? (updateProgress != null ? `Downloading ${updateProgress}%` : 'Downloading…')
+                    : 'Update'}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const result = await checkUpdate()
+                    if (result && !result.ok) addToast('error', 'Could not check for updates', 3000)
+                    else if (result && result.available) addToast('info', `Version ${result.latest} is available`, 3000)
+                    else if (result) addToast('success', "You're on the latest version", 3000)
+                  }}
+                  disabled={updateChecking}
+                  className="px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-60"
+                >
+                  {updateChecking ? 'Checking…' : 'Check for updates'}
+                </button>
+              )}
+            </SettingRow>
+          </section>
+
           <section className="space-y-3">
             <h2 className="text-xs text-gray-400 dark:text-gray-500">YouTube Account</h2>
 

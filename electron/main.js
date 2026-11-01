@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage, net, Notification, nativeImage } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, session, protocol, safeStorage, net, Notification, nativeImage, powerSaveBlocker } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -160,6 +160,7 @@ function migrateDownloadsLayout() {
 
 const YOUTUBE_SEARCH_URL = 'https://www.youtube.com/youtubei/v1/search'
 const YOUTUBE_BROWSE_URL = 'https://www.youtube.com/youtubei/v1/browse'
+const YOUTUBE_NEXT_URL = 'https://www.youtube.com/youtubei/v1/next'
 const YOUTUBE_PLAYER_URL = 'https://www.youtube.com/youtubei/v1/player'
 const YOUTUBE_OEMBED_URL = 'https://www.youtube.com/oembed'
 const YOUTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8'
@@ -182,6 +183,221 @@ async function ytGetText(url) {
   const r = await fetch(url, { headers: { 'User-Agent': UA, Cookie: 'SOCS=CAI' } })
   if (!r.ok) throw new Error(`HTTP ${r.status}`)
   return r.text()
+}
+
+// Public comment reads. The watch-next response only carries a continuation;
+// the comment text lives in the following page's entity payload.
+function ytText(node) {
+  if (!node) return ''
+  if (typeof node === 'string') return node
+  if (typeof node.simpleText === 'string') return node.simpleText
+  if (typeof node.content === 'string') return node.content
+  if (Array.isArray(node.runs)) return node.runs.map((r) => r.text || '').join('')
+  return ''
+}
+
+function commentBody(content) {
+  if (!content) return ''
+  if (typeof content === 'string') return content
+  if (typeof content.content === 'string') return content.content
+  return ytText(content)
+}
+
+function commentKeyOf(node) {
+  if (!node || typeof node !== 'object') return ''
+  if (typeof node.commentKey === 'string') return node.commentKey
+  if (node.commentViewModel) return commentKeyOf(node.commentViewModel)
+  return ''
+}
+
+function replyTokenOf(thread) {
+  const contents = thread?.replies?.commentRepliesRenderer?.contents || []
+  for (const item of contents) {
+    const token = item?.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+    if (token) return token
+  }
+  return ''
+}
+
+function keepReplyToken(count, token) {
+  if (!token) return ''
+  if (String(count || '').trim() === '0') return ''
+  return token
+}
+
+function continuationItems(data) {
+  const endpoints = data?.onResponseReceivedEndpoints || data?.onResponseReceivedActions || []
+  const lists = []
+  for (const ep of endpoints) {
+    const items = ep.reloadContinuationItemsCommand?.continuationItems
+      || ep.appendContinuationItemsAction?.continuationItems
+    if (Array.isArray(items)) lists.push(items)
+  }
+  return lists
+}
+
+function commentEntities(data) {
+  const map = new Map()
+  const mutations = data?.frameworkUpdates?.entityBatchUpdate?.mutations || []
+  for (const mutation of mutations) {
+    const payload = mutation?.payload?.commentEntityPayload
+    const props = payload?.properties
+    if (!props?.commentId) continue
+    map.set(payload.key || props.commentId, {
+      id: props.commentId,
+      text: commentBody(props.content),
+      time: props.publishedTime || '',
+      author: payload.author?.displayName || '',
+      avatar: payload.author?.avatarThumbnailUrl || '',
+      likes: payload.toolbar?.likeCountNotliked || payload.toolbar?.likeCountLiked || '',
+      replies: payload.toolbar?.replyCount || '',
+      creator: !!payload.author?.isCreator,
+      replyToken: '',
+    })
+  }
+  return map
+}
+
+function legacyComment(renderer, replyToken) {
+  if (!renderer) return null
+  return {
+    id: renderer.commentId || '',
+    text: ytText(renderer.contentText),
+    time: ytText(renderer.publishedTimeText),
+    author: ytText(renderer.authorText),
+    avatar: renderer.authorThumbnail?.thumbnails?.slice(-1)[0]?.url || '',
+    likes: ytText(renderer.voteCount) || '',
+    replies: renderer.replyCount ? String(renderer.replyCount) : '',
+    creator: !!renderer.authorIsChannelOwner,
+    replyToken: replyToken || '',
+  }
+}
+
+function parseCommentPage(data) {
+  const entities = commentEntities(data)
+  const comments = []
+  const seen = new Set()
+  let continuation = ''
+  let disabled = ''
+  let createParams = ''
+  const push = (comment) => {
+    if (!comment?.id || seen.has(comment.id)) return
+    if (!comment.text && !comment.author) return
+    seen.add(comment.id)
+    comments.push(comment)
+  }
+  for (const items of continuationItems(data)) {
+    for (const item of items) {
+      const header = item.commentsHeaderRenderer
+      if (header) {
+        const button = header.createRenderer?.commentSimpleboxRenderer?.submitButton?.buttonRenderer
+        const params = button?.serviceEndpoint?.createCommentEndpoint?.createCommentParams
+          || button?.command?.createCommentEndpoint?.createCommentParams
+        if (params) createParams = params
+      }
+      if (item.commentThreadRenderer) {
+        const thread = item.commentThreadRenderer
+        const replyToken = replyTokenOf(thread)
+        const key = commentKeyOf(thread.commentViewModel)
+        const entity = key && entities.get(key)
+        if (entity) push({ ...entity, replyToken: keepReplyToken(entity.replies, replyToken) })
+        else push(legacyComment(thread.comment?.commentRenderer, keepReplyToken(thread.comment?.commentRenderer?.replyCount, replyToken)))
+      } else if (item.commentViewModel || item.commentRenderer) {
+        const key = commentKeyOf(item)
+        const entity = key && entities.get(key)
+        if (entity) push(entity)
+        else push(legacyComment(item.commentRenderer, ''))
+      }
+      const token = item.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+      if (token) continuation = token
+      if (item.messageRenderer) {
+        const msg = ytText(item.messageRenderer.text)
+        if (msg) disabled = msg
+      }
+    }
+  }
+  return { comments, continuation, disabled, createParams }
+}
+
+function commentsSection(data) {
+  const panel = (data?.engagementPanels || []).find((p) =>
+    p.engagementPanelSectionListRenderer?.panelIdentifier === 'engagement-panel-comments-section'
+  )?.engagementPanelSectionListRenderer
+  if (!panel) return { token: '', count: '', sorts: [], disabled: '' }
+  const header = panel.header?.engagementPanelTitleHeaderRenderer
+  const count = ytText(header?.contextualInfo)
+  const sorts = (header?.menu?.sortFilterSubMenuRenderer?.subMenuItems || []).map((item) => ({
+    title: typeof item.title === 'string' ? item.title : ytText(item.title),
+    token: item.serviceEndpoint?.continuationCommand?.token || '',
+    selected: !!item.selected,
+  })).filter((item) => item.title && item.token)
+  let token = ''
+  let disabled = ''
+  const walk = (node) => {
+    if (!node || typeof node !== 'object' || token) return
+    const next = node.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+    if (next) { token = next; return }
+    if (node.messageRenderer) {
+      const msg = ytText(node.messageRenderer.text)
+      if (msg) disabled = msg
+    }
+    const kids = Array.isArray(node) ? node : Object.values(node)
+    for (const kid of kids) walk(kid)
+  }
+  walk(panel.content)
+  if (!token && sorts[0]) token = sorts.find((s) => s.selected)?.token || sorts[0].token
+  return { token, count, sorts, disabled }
+}
+
+function emptyComments(error) {
+  return { comments: [], continuation: '', count: '', sorts: [], disabled: '', createParams: '', error: error || null }
+}
+
+async function loadComments(videoId, continuation) {
+  const id = String(videoId || '').trim()
+  const token = String(continuation || '').trim()
+  if (!id && !token) return emptyComments('Missing video')
+  try {
+    if (token) {
+      const page = await ytPost(`${YOUTUBE_NEXT_URL}?key=${YOUTUBE_KEY}`, {
+        context: { client: WEB_CLIENT },
+        continuation: token,
+      })
+      return { ...parseCommentPage(page), count: '', sorts: [], error: null }
+    }
+    const watch = await ytPost(`${YOUTUBE_NEXT_URL}?key=${YOUTUBE_KEY}`, {
+      context: { client: WEB_CLIENT },
+      videoId: id,
+    })
+    const section = commentsSection(watch)
+    if (!section.token) {
+      return {
+        comments: [],
+        continuation: '',
+        count: section.count,
+        sorts: section.sorts,
+        disabled: section.disabled || 'Comments are turned off',
+        createParams: '',
+        error: null,
+      }
+    }
+    const page = await ytPost(`${YOUTUBE_NEXT_URL}?key=${YOUTUBE_KEY}`, {
+      context: { client: WEB_CLIENT },
+      continuation: section.token,
+    })
+    const parsed = parseCommentPage(page)
+    return {
+      comments: parsed.comments,
+      continuation: parsed.continuation,
+      count: section.count,
+      sorts: section.sorts,
+      disabled: parsed.comments.length ? '' : (parsed.disabled || section.disabled || ''),
+      createParams: parsed.createParams || '',
+      error: null,
+    }
+  } catch (e) {
+    return emptyComments(e.message || 'Could not load comments')
+  }
 }
 
 // ─── Network failure reporting ───────────────────────────────────────────────
@@ -393,6 +609,145 @@ async function authedBrowse(body) {
     status: (result && result.status) || 0,
     text: async () => (result && result.text) || '',
     json: async () => { try { return JSON.parse((result && result.text) || '') } catch (e) { return null } },
+  }
+}
+
+function youtubeSignedIn() {
+  return !!(auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['__Secure-1PAPISID'] || auth.cookiesByKey['SID'])
+}
+
+// Signed-in youtube.com calls. Only the comment composer and the watch-next
+// lookup that supplies its createCommentParams are allowed through here.
+async function authedYoutubeRequest(endpoint, body) {
+  if (endpoint !== 'next' && endpoint !== 'comment/create_comment') {
+    return { ok: false, status: 0, data: null }
+  }
+  const win = await ensureAuthedWindow()
+  let sapisid = auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['__Secure-1PAPISID'] || ''
+  if (!sapisid) {
+    try { await captureCookiesFromSession() } catch (e) { /* ignore */ }
+    sapisid = auth.cookiesByKey['SAPISID'] || auth.cookiesByKey['__Secure-3PAPISID'] || auth.cookiesByKey['__Secure-1PAPISID'] || ''
+  }
+  const url = endpoint === 'next'
+    ? YOUTUBE_NEXT_URL
+    : 'https://www.youtube.com/youtubei/v1/comment/create_comment'
+  const result = await win.webContents.executeJavaScript(`
+    (async () => {
+      try {
+        const cfg = (window.ytcfg && window.ytcfg.get) ? window.ytcfg.get('INNERTUBE_CONTEXT') || {} : {}
+        const client = cfg.client || {}
+        const clientVersion = client.clientVersion || '2.20231219.04.00'
+        const apiKey = (window.ytcfg && window.ytcfg.get && window.ytcfg.get('INNERTUBE_API_KEY')) || ${JSON.stringify(YOUTUBE_KEY)}
+        let body = JSON.parse(${JSON.stringify(JSON.stringify(body || {}))})
+        if (!body.context) body.context = {}
+        body.context = Object.assign({}, cfg, body.context)
+        body.context.client = Object.assign({}, cfg.client || {}, body.context.client || {})
+        if (!body.context.client.clientName) body.context.client.clientName = 'WEB'
+        if (!body.context.client.clientVersion) body.context.client.clientVersion = clientVersion
+        const sapisid = ${JSON.stringify(sapisid)}
+        let authHeaders = {}
+        if (sapisid) {
+          const ts = Math.floor(Date.now() / 1000)
+          const buf = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(ts + ' ' + sapisid + ' https://www.youtube.com'))
+          const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
+          authHeaders = {
+            'Authorization': 'SAPISIDHASH ' + ts + '_' + hex,
+            'X-Origin': 'https://www.youtube.com',
+            'X-Goog-AuthUser': '0',
+          }
+        }
+        const res = await fetch(${JSON.stringify(url)} + '?prettyPrint=false&key=' + encodeURIComponent(apiKey), {
+          method: 'POST',
+          headers: Object.assign({
+            'Content-Type': 'application/json',
+            'X-YouTube-Client-Name': '1',
+            'X-YouTube-Client-Version': clientVersion,
+            'Origin': 'https://www.youtube.com',
+            'Referer': 'https://www.youtube.com/',
+          }, authHeaders),
+          credentials: 'include',
+          body: JSON.stringify(body),
+        })
+        const text = await res.text()
+        return { ok: res.ok, status: res.status, text: text }
+      } catch (e) {
+        return { ok: false, status: 0, text: String(e && e.message || e) }
+      }
+    })()
+  `).then(v => (v && v.value !== undefined ? v.value : v), err => {
+    console.error('[Comments] executeJavaScript error:', err.message)
+    return { ok: false, status: 0, text: '' }
+  })
+  let data = null
+  const text = (result && result.text) || ''
+  if (text) { try { data = JSON.parse(text) } catch (e) { data = null } }
+  return { ok: !!(result && result.ok), status: result && result.status, data }
+}
+
+async function createCommentParams(videoId) {
+  const watch = await authedYoutubeRequest('next', { videoId })
+  if (!watch.data) return ''
+  const direct = parseCommentPage(watch.data).createParams
+  if (direct) return direct
+  const token = commentsContinuation(watch.data)
+  if (!token) return ''
+  const page = await authedYoutubeRequest('next', { continuation: token })
+  return parseCommentPage(page.data || {}).createParams || ''
+}
+
+function commentsContinuation(data) {
+  const panel = (data?.engagementPanels || []).find((p) =>
+    p.engagementPanelSectionListRenderer?.panelIdentifier === 'engagement-panel-comments-section'
+  )?.engagementPanelSectionListRenderer
+  if (!panel) return ''
+  let token = ''
+  const walk = (node) => {
+    if (!node || typeof node !== 'object' || token) return
+    const next = node.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+    if (next) { token = next; return }
+    const kids = Array.isArray(node) ? node : Object.values(node)
+    for (const kid of kids) walk(kid)
+  }
+  walk(panel.content || panel)
+  return token
+}
+
+async function postVideoComment(videoId, text) {
+  const body = String(text || '').replace(/\u0000/g, '').trim()
+  const id = String(videoId || '').trim()
+  if (!id) return { ok: false, reason: 'Missing video' }
+  if (!body) return { ok: false, reason: 'Write a comment first' }
+  if (body.length > 10000) return { ok: false, reason: 'Comment is too long' }
+  if (!youtubeSignedIn()) return { ok: false, reason: 'Sign in to comment' }
+  try {
+    const params = await createCommentParams(id)
+    if (!params) return { ok: false, reason: 'Comments are turned off for this video' }
+    const res = await authedYoutubeRequest('comment/create_comment', {
+      commentText: body,
+      createCommentParams: params,
+    })
+    if (!res.ok || !res.data) return { ok: false, reason: 'Could not post the comment' }
+    if (res.data.error) return { ok: false, reason: 'YouTube did not accept the comment' }
+    const status = res.data.actionResult?.status || ''
+    if (status && !/SUCCEED/i.test(status)) return { ok: false, reason: 'YouTube did not accept the comment' }
+    const created = parseCommentPage(res.data).comments.find((c) => c.text === body) || parseCommentPage(res.data).comments[0]
+    return {
+      ok: true,
+      comment: created || {
+        id: `local-${Date.now()}`,
+        text: body,
+        time: 'Just now',
+        author: 'You',
+        avatar: (auth.account && auth.account.avatar) || '',
+        likes: '',
+        replies: '',
+        replyToken: '',
+        creator: false,
+      },
+    }
+  } catch (e) {
+    console.error('[Comments] post error:', e.message)
+    return { ok: false, reason: 'Could not post the comment' }
   }
 }
 
@@ -2871,8 +3226,12 @@ function parseLrc(lrc) {
     const wre = /<(\d{1,3}):(\d{1,2}(?:\.\d{1,3})?)>\s*([^<]*)/g
     let wm
     while ((wm = wre.exec(body))) {
-      const w = wm[3].trim()
-      if (w) words.push({ t: parseInt(wm[1], 10) * 60 + parseFloat(wm[2]), w })
+      const raw = wm[3]
+      const w = raw.trim()
+      if (!w) continue
+      // The space after a word lives in the file. Keep it, or offline playback
+      // glues "I done" into "Idone".
+      words.push({ t: parseInt(wm[1], 10) * 60 + parseFloat(wm[2]), w, sep: /\s$/.test(raw) ? ' ' : '' })
     }
     const text = body.replace(/<\d{1,3}:\d{1,2}(?:\.\d{1,3})?>/g, '').trim()
     for (const s of stamps) {
@@ -3366,7 +3725,8 @@ function syncedToLrc(lines, meta = {}) {
       for (const w of words) {
         const word = clean(w.w)
         if (!word) continue
-        seg += `<${stamp(w.t)}>${word} `
+        const gap = w.sep == null ? ' ' : w.sep
+        seg += `<${stamp(w.t)}>${word}${gap}`
       }
       body.push(`[${stamp(line.t)}]${seg.trim()}`)
     } else if (clean(line.text)) {
@@ -3717,10 +4077,19 @@ async function getMusicLibrary() {
 // ── Audio-only stream resolution (no ffmpeg) ────────────────────────────────
 // getMediaUrls already races innertube vs yt-dlp and caches by videoId; for
 // music we only need the audio URL, which plays directly.
-async function getAudioStream(videoId) {
+function dropStreamCache(videoId) {
+  for (const key of [...streamUrlCache.keys()]) {
+    if (key.startsWith(`${videoId}|`)) streamUrlCache.delete(key)
+  }
+}
+
+async function getAudioStream(videoId, opts = {}) {
   if (!videoId) return { ok: false, reason: 'No video ID' }
+  // A stalled googlevideo URL stays in the cache for hours. Drop it and ask
+  // yt-dlp, whose deciphered URL keeps playing past the point the fast one dies.
+  if (opts.fresh) dropStreamCache(videoId)
   // Songs should stay in the language they were recorded in, not an English dub.
-  const r = await getMediaUrls(videoId, 'auto', { preferEnglish: false })
+  const r = await getMediaUrls(videoId, 'auto', { preferEnglish: false, forceYtDlp: !!opts.fresh })
   if (!r || !r.ok || !r.audioUrl) return { ok: false, reason: (r && r.reason) || 'No audio stream' }
   return { ok: true, audioUrl: r.audioUrl, source: r.source || 'unknown' }
 }
@@ -5750,7 +6119,7 @@ function setupSession() {
   session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['*://*.youtube.com/*', '*://*.ytimg.com/*', '*://*.googlevideo.com/*'] }, (details, callback) => {
     const headers = details.requestHeaders
     headers['User-Agent'] = CHROME_UA
-    if (details.url.includes('/embed/') || details.url.includes('/watch')) {
+    if (details.url.includes('googlevideo.com') || details.url.includes('/embed/') || details.url.includes('/watch')) {
       headers['Referer'] = 'https://www.youtube.com/'
     }
     callback({ requestHeaders: headers })
@@ -5765,6 +6134,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
       hardwareAcceleration: true,
       webgl: true,
       allowRunningInsecureContent: false,
@@ -5923,6 +6293,13 @@ async function coverImageDataUrl(url) {
 
 function setupIPC() {
   ipcMain.handle('get-app-path', () => CONFIG_DIR)
+  ipcMain.handle('app-version', () => app.getVersion())
+  ipcMain.handle('update-check', () => checkForAppUpdate())
+  ipcMain.handle('update-install', () => startAppUpdate().catch((e) => {
+    console.warn('[Update] install', e.message)
+    updateState = { ...updateState, status: 'error', reason: 'Could not start the update' }
+    return { ok: false, ...updateState }
+  }))
   ipcMain.handle('get-downloads-path', () => DOWNLOADS_DIR)
 
   // The three folders the renderer shows in Settings: the base downloads dir and
@@ -6086,6 +6463,16 @@ function setupIPC() {
     return getVideoInfo(videoId)
   })
 
+  ipcMain.handle('yt-comments', async (_e, args) => {
+    const a = args || {}
+    return loadComments(a.videoId, a.continuation || '')
+  })
+
+  ipcMain.handle('yt-comment-create', async (_e, args) => {
+    const a = args || {}
+    return postVideoComment(a.videoId, a.text)
+  })
+
   ipcMain.handle('yt-channel', async (_e, channelName) => {
     console.log('[IPC] yt-channel:', channelName)
     return getChannelInfo(channelName)
@@ -6218,9 +6605,23 @@ function setupIPC() {
   })
 
   // Audio-only stream URL for the music player (no ffmpeg relay).
-  ipcMain.handle('yt-audio-stream', async (_e, videoId) => {
-    console.log('[IPC] yt-audio-stream:', videoId)
-    try { return await getAudioStream(videoId) } catch (e) { return { ok: false, reason: e.message } }
+  ipcMain.handle('yt-audio-stream', async (_e, videoId, opts) => {
+    const fresh = !!(opts && opts.fresh)
+    console.log('[IPC] yt-audio-stream:', videoId, fresh ? '(fresh)' : '')
+    try { return await getAudioStream(videoId, { fresh }) } catch (e) { return { ok: false, reason: e.message } }
+  })
+
+  let audioKeepAliveId = 0
+  ipcMain.handle('audio-keepalive', (_e, on) => {
+    if (on) {
+      if (!audioKeepAliveId || !powerSaveBlocker.isStarted(audioKeepAliveId)) {
+        audioKeepAliveId = powerSaveBlocker.start('prevent-app-suspension')
+      }
+      return true
+    }
+    if (audioKeepAliveId && powerSaveBlocker.isStarted(audioKeepAliveId)) powerSaveBlocker.stop(audioKeepAliveId)
+    audioKeepAliveId = 0
+    return false
   })
 
   ipcMain.handle('yt-audio-prewarm', async (_e, videoId) => {
@@ -6381,6 +6782,139 @@ function setupIPC() {
   })
 }
 
+// ─── Updates ─────────────────────────────────────────────────────────────────
+// Packaged builds ask GitHub for a newer release. Nothing is downloaded until
+// the user chooses Update. Dev sessions can still check on demand, but they
+// never prompt on their own.
+
+const RELEASES_LATEST = 'https://api.github.com/repos/98Reyansh/Kovatube/releases/latest'
+const { autoUpdater: electronAutoUpdater } = require('electron-updater')
+let updateState = {
+  current: '',
+  latest: '',
+  available: false,
+  status: 'idle',
+  reason: '',
+}
+let autoUpdater = null
+
+function compareVersions(a, b) {
+  const parts = (v) => String(v || '').replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0)
+  const pa = parts(a)
+  const pb = parts(b)
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return 1
+    if (pa[i] < pb[i]) return -1
+  }
+  return 0
+}
+
+function sendUpdate(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+}
+
+function publishUpdateState() {
+  updateState.current = app.getVersion()
+  if (updateState.available) sendUpdate('update-available', updateState)
+  return updateState
+}
+
+function fetchLatestRelease() {
+  const read = (url, redirects = 0) => new Promise((resolve, reject) => {
+    const lib = url.startsWith('https:') ? https : http
+    const req = lib.get(url, {
+      headers: { 'User-Agent': 'Kovatube', Accept: 'application/vnd.github+json' },
+    }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects < 3) {
+        res.resume()
+        read(new URL(res.headers.location, url).href, redirects + 1).then(resolve, reject)
+        return
+      }
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        if (res.statusCode !== 200) { reject(new Error('http ' + res.statusCode)); return }
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) }
+        catch (e) { reject(e) }
+      })
+    })
+    req.on('error', reject)
+    req.setTimeout(12000, () => req.destroy(new Error('timeout')))
+  })
+  return read(RELEASES_LATEST)
+}
+
+async function checkForAppUpdate() {
+  updateState.current = app.getVersion()
+  if (!app.isPackaged) {
+    try {
+      const rel = await fetchLatestRelease()
+      const latest = String(rel.tag_name || '').replace(/^v/, '')
+      const available = !!latest && compareVersions(latest, updateState.current) > 0
+      updateState = { current: updateState.current, latest, available, status: available ? 'available' : 'current', reason: '' }
+    } catch (e) {
+      console.warn('[Update]', e.message)
+      updateState = { ...updateState, status: 'error', reason: 'Could not check for updates' }
+      return { ok: false, ...updateState }
+    }
+    publishUpdateState()
+    return { ok: true, ...updateState }
+  }
+  if (!autoUpdater) return { ok: false, ...updateState, status: 'error', reason: 'Updater unavailable' }
+  try {
+    const result = await autoUpdater.checkForUpdates()
+    const latest = result && result.updateInfo && result.updateInfo.version
+    if (latest) {
+      const available = compareVersions(latest, app.getVersion()) > 0
+      updateState = { current: app.getVersion(), latest, available, status: available ? 'available' : 'current', reason: '' }
+    }
+  } catch (e) {
+    console.warn('[Update]', e.message)
+    updateState = { ...updateState, current: app.getVersion(), status: 'error', reason: 'Could not check for updates' }
+    return { ok: false, ...updateState }
+  }
+  publishUpdateState()
+  return { ok: true, ...updateState }
+}
+
+function setupUpdater() {
+  if (!app.isPackaged) return
+  autoUpdater = electronAutoUpdater
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = false
+  autoUpdater.on('error', (err) => {
+    const reason = (err && err.message) || 'Update failed'
+    if (/no update/i.test(reason)) return
+    console.warn('[Update]', reason)
+    updateState = { ...updateState, status: 'error', reason: 'Could not check for updates' }
+    sendUpdate('update-error', updateState)
+  })
+  autoUpdater.on('download-progress', (p) => {
+    sendUpdate('update-progress', { percent: Math.round(p.percent || 0) })
+  })
+  autoUpdater.on('update-downloaded', () => {
+    updateState = { ...updateState, status: 'downloaded' }
+    sendUpdate('update-downloaded', updateState)
+    autoUpdater.quitAndInstall(false, true)
+  })
+  setTimeout(() => { checkForAppUpdate().catch(() => {}) }, 8000)
+}
+
+async function startAppUpdate() {
+  if (process.platform === 'darwin' || !app.isPackaged || !autoUpdater) {
+    const version = String(updateState.latest || '').replace(/^v/, '')
+    const url = version
+      ? `https://github.com/98Reyansh/Kovatube/releases/tag/v${version}`
+      : 'https://github.com/98Reyansh/Kovatube/releases/latest'
+    await shell.openExternal(url)
+    return { ok: true, opened: true }
+  }
+  updateState = { ...updateState, status: 'downloading' }
+  sendUpdate('update-progress', { percent: 0 })
+  await autoUpdater.downloadUpdate()
+  return { ok: true, downloading: true }
+}
+
 // ─── App Lifecycle ───────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -6407,6 +6941,7 @@ app.whenReady().then(async () => {
   setupSession()
   setupFileProtocol()
   setupIPC()
+  setupUpdater()
   try { await startStaticServer() } catch (e) { console.error('[App] static server failed', e.message) }
   createWindow()
   startPlaylistSyncScheduler()

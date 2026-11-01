@@ -48,6 +48,8 @@ jobs:
             release/*.dmg
             release/*.zip
             release/*.exe
+            release/*.yml
+            release/*.blockmap
 
   release:
     needs: build
@@ -71,7 +73,7 @@ jobs:
             TAG="$(git describe --tags --abbrev=0)"
           fi
           VERSION="${TAG#v}"
-          mapfile -t files < <(find release-files -type f \( -name '*.AppImage' -o -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \))
+          mapfile -t files < <(find release-files -type f \( -name '*.AppImage' -o -name '*.exe' -o -name '*.dmg' -o -name '*.zip' -o -name '*.yml' -o -name '*.blockmap' \))
           notes=$(cat <<'EOF'
           Linux AppImage, Windows installer, and macOS disk images and zip archives (Apple silicon and Intel).
 
