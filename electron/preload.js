@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ytSubscribe: (channel) => ipcRenderer.invoke('yt-subscribe', channel),
   ytUnsubscribe: (channel) => ipcRenderer.invoke('yt-unsubscribe', channel),
   ytVideoInfo: (videoId) => ipcRenderer.invoke('yt-video-info', videoId),
+  ytComments: (args) => ipcRenderer.invoke('yt-comments', args),
+  ytCommentCreate: (args) => ipcRenderer.invoke('yt-comment-create', args),
   ytChannel: (channelName) => ipcRenderer.invoke('yt-channel', channelName),
   ytChannelAvatar: (channelName) => ipcRenderer.invoke('yt-channel-avatar', channelName),
   ytChannelMore: (token, channelName) => ipcRenderer.invoke('yt-channel-more', token, channelName),
