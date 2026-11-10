@@ -31,6 +31,88 @@ function tapAudio(audio) {
   }
 }
 
+// The cover is a 128px blur, and the warp across it is a very slow wave.
+// Evaluating that wave on every screen pixel is the GPU cost. Half resolution
+// is still several times finer than the artwork, and the finish (grain,
+// vignette, color, 60fps) stays at the full screen size, so the picture matches.
+function attachHalfResWarp(kawarp) {
+  const resizeWarp = () => {
+    const width = Math.max(1, kawarp.canvas.width)
+    const height = Math.max(1, kawarp.canvas.height)
+    const ww = Math.max(1, Math.round(width / 2))
+    const hh = Math.max(1, Math.round(height / 2))
+    if (kawarp.warpFBO && kawarp.warpFBO.width === ww && kawarp.warpFBO.height === hh) return
+    if (kawarp.warpFBO) kawarp.deleteFramebuffer(kawarp.warpFBO)
+    kawarp.warpFBO = kawarp.createFramebuffer(ww, hh, true)
+  }
+
+  kawarp.resize = resizeWarp
+
+  kawarp.render = function render(time, timestamp = performance.now()) {
+    if (this.disposed || !this.hasImage) return
+    this.advanceVideoSmoothing(timestamp)
+    const gl = this.gl
+    const width = Math.max(1, this.canvas.width)
+    const height = Math.max(1, this.canvas.height)
+    resizeWarp()
+    const ww = this.warpFBO.width
+    const hh = this.warpFBO.height
+
+    let blendFactor = 1.0
+    if (this.isTransitioning) {
+      const elapsed = Math.max(0, timestamp - this.transitionStartTime)
+      blendFactor = this._transitionDuration > 0
+        ? Math.min(1.0, elapsed / this._transitionDuration)
+        : 1.0
+      if (blendFactor >= 1.0) this.isTransitioning = false
+    }
+
+    let currentTexture
+    if (this.isTransitioning && blendFactor < 1.0) {
+      gl.useProgram(this.blendProgram)
+      this.setupAttributes()
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.blurFBO1.framebuffer)
+      gl.viewport(0, 0, this.blurFBO1.width, this.blurFBO1.height)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, this.currentAlbumFBO.texture)
+      gl.uniform1i(this.uniforms.blend.texture1, 0)
+      gl.activeTexture(gl.TEXTURE1)
+      gl.bindTexture(gl.TEXTURE_2D, this.nextAlbumFBO.texture)
+      gl.uniform1i(this.uniforms.blend.texture2, 1)
+      const easedBlend = 0.5 - 0.5 * Math.cos(blendFactor * Math.PI)
+      gl.uniform1f(this.uniforms.blend.blend, easedBlend)
+      gl.drawArrays(gl.TRIANGLES, 0, 6)
+      currentTexture = this.blurFBO1.texture
+    } else {
+      currentTexture = this.nextAlbumFBO.texture
+    }
+
+    gl.useProgram(this.warpProgram)
+    this.setupAttributes()
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.warpFBO.framebuffer)
+    gl.viewport(0, 0, ww, hh)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, currentTexture)
+    gl.uniform1i(this.uniforms.warp.texture, 0)
+    gl.uniform1f(this.uniforms.warp.time, time)
+    gl.uniform1f(this.uniforms.warp.intensity, this._warpIntensity)
+    gl.drawArrays(gl.TRIANGLES, 0, 6)
+
+    gl.useProgram(this.outputProgram)
+    this.setupAttributes()
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.viewport(0, 0, width, height)
+    gl.bindTexture(gl.TEXTURE_2D, this.warpFBO.texture)
+    gl.uniform1i(this.uniforms.output.texture, 0)
+    gl.uniform1f(this.uniforms.output.saturation, this._saturation)
+    gl.uniform1f(this.uniforms.output.dithering, this._dithering)
+    gl.uniform1f(this.uniforms.output.time, time)
+    gl.uniform1f(this.uniforms.output.scale, this._scale)
+    gl.uniform2f(this.uniforms.output.resolution, width, height)
+    gl.drawArrays(gl.TRIANGLES, 0, 6)
+  }
+}
+
 export default function CoverShader({ url, audio, playing }) {
   const canvasRef = useRef(null)
   const playingRef = useRef(playing)
@@ -77,6 +159,7 @@ export default function CoverShader({ url, audio, playing }) {
       try {
         const { Kawarp } = await import('@kawarp/core')
         if (dead) return
+        fit()
         kawarp = new Kawarp(canvas, {
           warpIntensity: 1,
           blurPasses: 8,
@@ -86,10 +169,14 @@ export default function CoverShader({ url, audio, playing }) {
           transitionDuration: 900,
           scale: 1.05,
         })
+        attachHalfResWarp(kawarp)
         const dataUrl = await window.electronAPI?.coverImage?.(url)
         if (dead) return
-        if (dataUrl) await kawarp.loadImage(dataUrl)
-        else kawarp.loadGradient(['#3a2a4a', '#1c1a24', '#2a2038'], 160)
+        let loaded = false
+        if (dataUrl) {
+          try { await kawarp.loadImage(dataUrl); loaded = true } catch { loaded = false }
+        }
+        if (!loaded) kawarp.loadGradient(['#3a2a4a', '#1c1a24', '#2a2038'], 160)
         if (dead) return
         fit()
         kawarp.start()

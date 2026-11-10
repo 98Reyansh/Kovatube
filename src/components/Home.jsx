@@ -1,7 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useSearch } from '../context/SearchContext'
 import FypFeed from './FypFeed'
-import { prewarmOnHover } from '../lib/prewarm'
+import { prewarmNow, prewarmOnHover } from '../lib/prewarm'
 import VideoMenu from './VideoMenu'
 
 function SkeletonShort() {
@@ -17,7 +17,7 @@ function SkeletonShort() {
 function ShortCard({ video }) {
   const navigate = useNavigate()
   return (
-    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="shrink-0 w-36 group">
+    <Link to={`/video/${video.id}`} onPointerDown={() => prewarmNow(video.id)} onMouseEnter={() => prewarmOnHover(video.id)} className="shrink-0 w-36 group">
       <div className="relative aspect-[9/16] bg-neutral-200 dark:bg-neutral-900 rounded-md overflow-hidden">
         {video.thumbnail ? (
           <img
@@ -52,7 +52,7 @@ function VideoCard({ video }) {
     if (video.channel) navigate(`/channel/${encodeURIComponent(video.channel)}`)
   }
   return (
-    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col">
+    <Link to={`/video/${video.id}`} onPointerDown={() => prewarmNow(video.id)} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col">
       <div className="relative aspect-video bg-neutral-200 dark:bg-neutral-900 rounded-md overflow-hidden">
         {video.thumbnail ? (
           <img

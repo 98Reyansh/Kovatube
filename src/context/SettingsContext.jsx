@@ -31,6 +31,7 @@ const DEFAULTS = {
   playerBar: 'pill', // 'pill' | 'full'
   lyricAnimation: 'karaoke', // 'karaoke' | 'rise' | 'glow' | 'bounce' | 'fade'
   lyricShader: true, // fluid album-art background on the full player
+  captionLang: '', // '' off, otherwise 'en' or 'en:asr'
 }
 
 export const ACCENT_PRESETS = {

@@ -1102,6 +1102,12 @@ html:not(.dark) .nav-underline[data-active="true"] {
 /* ── Mini player surface ──────────────────────────────────── */
 /* Watch page. Theater mode pulls the player out to the edges of the
    content column, the way YouTube's theater layout does. */
+video::cue {
+  background-color: rgba(8, 8, 8, 0.75);
+  color: #fff;
+  font-size: 1.05em;
+}
+
 .watch-player.is-theater {
   display: flex;
   align-items: center;

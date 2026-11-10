@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom'
+import { prewarmNow } from '../lib/prewarm'
 import { useSaved } from '../context/SavedContext'
 import { useDownloads } from '../context/DownloadContext'
 import { useToast } from '../context/ToastContext'
@@ -68,6 +69,7 @@ export default function SavedVideos() {
             <div
               key={video.id}
               className="group cursor-pointer"
+              onPointerDown={() => prewarmNow(video.id)}
               onClick={() => navigate(`/video/${video.id}`)}
             >
               <div className="relative aspect-video bg-neutral-200 dark:bg-neutral-900 rounded-md overflow-hidden">

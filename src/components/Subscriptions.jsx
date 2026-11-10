@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useSubscriptions } from '../context/SubscriptionsContext'
-import { prewarmOnHover } from '../lib/prewarm'
+import { prewarmNow, prewarmOnHover } from '../lib/prewarm'
 
 function ChannelPhoto({ name, url }) {
   const [failed, setFailed] = useState(false)
@@ -97,7 +97,7 @@ export default function Subscriptions() {
           </div>
           <div className="reveal-grid grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {history.slice(0, 12).map((v) => (
-              <Link key={v.id} to={`/video/${v.id}`} onMouseEnter={() => prewarmOnHover(v.id)} className="group flex gap-3 py-2">
+              <Link key={v.id} to={`/video/${v.id}`} onPointerDown={() => prewarmNow(v.id)} onMouseEnter={() => prewarmOnHover(v.id)} className="group flex gap-3 py-2">
                 <div className="w-20 h-12 shrink-0 rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-700">
                   {v.thumbnail ? (
                     <img src={v.thumbnail} alt="" className="w-full h-full object-cover" loading="lazy" />
