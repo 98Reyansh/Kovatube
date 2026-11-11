@@ -77,7 +77,7 @@ jobs:
           notes=$(cat <<'EOF'
           Linux AppImage, Windows installer, and macOS disk images and zip archives (Apple silicon and Intel).
 
-          This release turns the Linux GPU back on, loads Shorts faster with five videos kept ready, and adds a Material theme plus an Apple Music now-playing screen. Opening a song from its cover shows the full player, including ambient mode, and the background follows the cover colors.
+          This release adds video comments, including posting while signed in, and plays a video at double speed while the spacebar is held. The watch controls follow the YouTube bar, music keeps playing when a stream stalls, and the app can offer an update from GitHub releases.
 
           yt-dlp and ffmpeg still need to be installed, unless you place them in the app bin folder. These macOS and Windows builds are unsigned, so Gatekeeper and SmartScreen warn the first time you open them.
           EOF

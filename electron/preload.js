@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ytSubscribe: (channel) => ipcRenderer.invoke('yt-subscribe', channel),
   ytUnsubscribe: (channel) => ipcRenderer.invoke('yt-unsubscribe', channel),
   ytVideoInfo: (videoId) => ipcRenderer.invoke('yt-video-info', videoId),
+  ytCaptions: (args) => ipcRenderer.invoke('yt-captions', args),
   ytComments: (args) => ipcRenderer.invoke('yt-comments', args),
   ytCommentCreate: (args) => ipcRenderer.invoke('yt-comment-create', args),
   ytChannel: (channelName) => ipcRenderer.invoke('yt-channel', channelName),
@@ -45,13 +46,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ytNewVideos: () => ipcRenderer.invoke('yt-new-videos'),
   ytConvertFormats: (videoUrl) => ipcRenderer.invoke('yt-convert-formats', videoUrl),
   ytExtractId: (url) => ipcRenderer.invoke('yt-extract-id', url),
-  ytStream: (videoId, quality) => ipcRenderer.invoke('yt-stream', videoId, quality),
+  ytStream: (videoId, quality, relay) => ipcRenderer.invoke('yt-stream', videoId, quality, !!relay),
   ytStreamStop: (videoId) => ipcRenderer.invoke('yt-stream-stop', videoId),
   ytPrewarm: (videoId) => ipcRenderer.invoke('yt-prewarm', videoId),
   coverPalette: (url) => ipcRenderer.invoke('cover-palette', url),
   coverImage: (url) => ipcRenderer.invoke('cover-image', url),
   onStreamPhase: (cb) => { ipcRenderer.on('stream-phase', (_e, data) => cb(data)) },
   removeStreamPhaseListeners: () => { ipcRenderer.removeAllListeners('stream-phase') },
+  onStreamCapped: (cb) => {
+    const handler = (_e, data) => cb(data)
+    ipcRenderer.on('stream-capped', handler)
+    return () => ipcRenderer.removeListener('stream-capped', handler)
+  },
 
   // YouTube Music
   ytMusicHome: () => ipcRenderer.invoke('yt-music-home'),

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import SubscribeButton from './SubscribeButton'
-import { prewarmOnHover } from '../lib/prewarm'
+import { prewarmNow, prewarmOnHover } from '../lib/prewarm'
 import VideoMenu from './VideoMenu'
 
 function SkeletonCard() {
@@ -16,7 +16,7 @@ function SkeletonCard() {
 
 function VideoCard({ video }) {
   return (
-    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col">
+    <Link to={`/video/${video.id}`} onPointerDown={() => prewarmNow(video.id)} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col">
       <div className="relative aspect-video bg-neutral-200 dark:bg-neutral-900 rounded-md overflow-hidden">
           {video.thumbnail ? (
             <img src={video.thumbnail} alt={video.title} className="w-full h-full object-cover" loading="lazy" />

@@ -10,7 +10,7 @@ import { pushMediaFocus } from '../mediaFocus'
 import VideoMenu from './VideoMenu'
 import Comments from './Comments'
 import LocalPlayer from './LocalPlayer'
-import { prewarmOnHover } from '../lib/prewarm'
+import { prewarmNow, prewarmOnHover } from '../lib/prewarm'
 
 // "m:ss" or "h:mm:ss" from the video page. 0 when the length isn't known yet.
 function clockToSeconds(text) {
@@ -40,20 +40,51 @@ function fullDuration(known, media) {
   return mediaSec || knownSec
 }
 
-function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = false, onToggleTheater }) {
+const EMPTY_CAPTIONS = []
+
+function captionTrackKey(track) {
+  if (!track) return ''
+  return track.kind === 'asr' ? `${track.languageCode}:asr` : track.languageCode
+}
+
+function applyCaptionCues(video, cues) {
+  if (!video || typeof video.addTextTrack !== 'function') return
+  let track = null
+  for (const item of video.textTracks) {
+    if (item.label === 'Kovatube captions') { track = item; break }
+  }
+  if (!track) track = video.addTextTrack('subtitles', 'Kovatube captions', 'en')
+  const existing = track.cues ? [...track.cues] : []
+  for (const cue of existing) {
+    try { track.removeCue(cue) } catch { /* the cue was already removed */ }
+  }
+  for (const cue of cues || []) {
+    if (!(cue.end > cue.start) || !cue.text) continue
+    try { track.addCue(new VTTCue(cue.start, cue.end, cue.text)) } catch { /* skip a cue the browser rejects */ }
+  }
+  track.mode = cues && cues.length ? 'showing' : 'disabled'
+}
+
+function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = false, onToggleTheater, captions = EMPTY_CAPTIONS, captionLang = '', onCaptionLang }) {
   const [streamUrl, setStreamUrl] = useState(null)
+  const [direct, setDirect] = useState(null)
   const [streamError, setStreamError] = useState(null)
   const [loadingStream, setLoadingStream] = useState(true)
-  const [phase, setPhase] = useState('resolving')
   const [quality, setQuality] = useState('auto')
+  const [reloadToken, setReloadToken] = useState(0)
 
   const videoRef = useRef(null)
+  const audioRef = useRef(null)
+  const directRef = useRef(false)
+  const relayRef = useRef(false)
   const hlsRef = useRef(null)
   const containerRef = useRef(null)
   const seekToRef = useRef(null)
   const knownRef = useRef(0)
   knownRef.current = knownDuration > 0 ? knownDuration : 0
   const [playing, setPlaying] = useState(autoPlay)
+  const wantAutoRef = useRef(autoPlay !== false)
+  useEffect(() => { wantAutoRef.current = autoPlay !== false }, [id, autoPlay])
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [seekable, setSeekable] = useState(0)
@@ -68,21 +99,23 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
   const [seeking, setSeeking] = useState(false)
   const theaterToggleRef = useRef(onToggleTheater)
   theaterToggleRef.current = onToggleTheater
+  const [captionLoading, setCaptionLoading] = useState(false)
+  const [captionError, setCaptionError] = useState('')
+  const captionCuesRef = useRef([])
+  const captionsRef = useRef(captions)
+  const captionLangRef = useRef(captionLang)
+  const onCaptionLangRef = useRef(onCaptionLang)
+  const lastCaptionRef = useRef(captionLang)
+  captionsRef.current = captions
+  captionLangRef.current = captionLang
+  onCaptionLangRef.current = onCaptionLang
+  if (captionLang) lastCaptionRef.current = captionLang
   const hideTimer = useRef(null)
   // Click-to-play timing marks (see [play-timing] logs) — reset per load.
   const timingRef = useRef({ t0: 0, manifest: false, firstFrame: false })
 
   const QUALITIES = ['auto', '1080', '720', '480', '360']
   const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2]
-
-  // Listen for stream-phase progress events from main
-  useEffect(() => {
-    if (!window.electronAPI?.onStreamPhase) return
-    const off = window.electronAPI.onStreamPhase(({ videoId, phase: p }) => {
-      if (videoId === id) setPhase(p)
-    })
-    return () => { if (window.electronAPI?.removeStreamPhaseListeners) window.electronAPI.removeStreamPhaseListeners() }
-  }, [id])
 
   // Prewarm: kick off the slow yt-dlp stream-source resolution as soon as the
   // player mounts (paralleling video-info loading). ytStream below then hits the
@@ -96,7 +129,21 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
   const stopCurrent = () => {
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null }
     if (window.electronAPI) window.electronAPI.ytStreamStop(id).catch(() => {})
+    const audio = audioRef.current
+    if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load() }
   }
+
+  useEffect(() => { relayRef.current = false }, [id])
+
+  // A capped googlevideo URL starts, then dies. Switch this video to the remux.
+  useEffect(() => {
+    if (!window.electronAPI?.onStreamCapped) return undefined
+    return window.electronAPI.onStreamCapped(({ videoId }) => {
+      if (videoId !== id || relayRef.current) return
+      relayRef.current = true
+      setReloadToken((n) => n + 1)
+    })
+  }, [id])
 
   // Main load: (re)start a stream at the chosen quality
   useEffect(() => {
@@ -106,9 +153,10 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
       seekToRef.current = prevVideo.currentTime
     }
     setStreamUrl(null)
+    setDirect(null)
+    directRef.current = false
     setStreamError(null)
     setLoadingStream(true)
-    setPhase('resolving')
     setCurrentTime(0)
     setDuration(0)
     setSeekable(0)
@@ -118,9 +166,13 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
 
     const load = async () => {
       if (!window.electronAPI) { setStreamError('No stream API'); setLoadingStream(false); return }
-      const r = await window.electronAPI.ytStream(id, quality).catch(e => ({ ok: false, reason: e.message }))
+      const r = await window.electronAPI.ytStream(id, quality, relayRef.current).catch(e => ({ ok: false, reason: e.message }))
       if (cancelled) return
-      if (r?.ok && r.url) {
+      if (r?.ok && r.direct && r.videoUrl && r.audioUrl) {
+        directRef.current = true
+        setDirect({ videoUrl: r.videoUrl, audioUrl: r.audioUrl })
+        console.log(`[play-timing] ${id} direct-ready=${Date.now() - timingRef.current.t0}ms quality=${quality}`)
+      } else if (r?.ok && r.url) {
         setStreamUrl(r.url)
         console.log(`[play-timing] ${id} url-ready=${Date.now() - timingRef.current.t0}ms quality=${quality}`)
       } else {
@@ -136,12 +188,14 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
       stopCurrent()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, quality])
+  }, [id, quality, reloadToken])
 
   // Wire the hls.js player to the <video>
   useEffect(() => {
     const video = videoRef.current
-    if (!video || !streamUrl) return
+    if (!video || !streamUrl) return undefined
+    let hlsOnce = null
+    video.crossOrigin = 'anonymous'
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
@@ -161,6 +215,8 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
       hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
         const d = data && data.media && isFinite(data.media.duration) ? data.media.duration : 0
         if (d > 0) setDuration(d)
+        applyCaptionCues(video, captionCuesRef.current)
+        if (wantAutoRef.current) video.play().catch(() => {})
         if (timingRef.current.t0 && !timingRef.current.manifest) {
           timingRef.current.manifest = true
           console.log(`[play-timing] ${id} manifest=${Date.now() - timingRef.current.t0}ms`)
@@ -176,18 +232,123 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
           hls.destroy(); hlsRef.current = null; setStreamError('Stream playback error')
         }
       })
-      if (autoPlay) {
-        video.play().catch(() => {})
-      }
+      const disarm = armAutoplay(video)
+      hlsOnce = disarm
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = streamUrl
-      if (autoPlay) video.play().catch(() => {})
+      hlsOnce = armAutoplay(video)
     } else {
       setStreamError('HLS playback not supported')
     }
-    return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null } }
+    return () => {
+      if (hlsOnce) hlsOnce()
+      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamUrl, autoPlay])
+
+  // Picture and sound are separate files. Play them together so a click doesn't
+  // wait for ffmpeg to remux a playlist. The video element stays silent.
+  useEffect(() => {
+    const video = videoRef.current
+    const audio = audioRef.current
+    if (!video || !audio || !direct) return undefined
+    let failed = false
+    const giveUp = () => {
+      if (failed || relayRef.current) return
+      failed = true
+      relayRef.current = true
+      directRef.current = false
+      setDirect(null)
+      setReloadToken((n) => n + 1)
+    }
+    video.removeAttribute('crossorigin')
+    video.src = direct.videoUrl
+    audio.src = direct.audioUrl
+    video.muted = true
+    audio.volume = volume
+    audio.muted = muted
+    const align = () => {
+      if (video.seeking) return
+      if (Math.abs((audio.currentTime || 0) - (video.currentTime || 0)) > 0.35) {
+        try { audio.currentTime = video.currentTime } catch { /* not ready */ }
+      }
+      if (audio.playbackRate !== video.playbackRate) audio.playbackRate = video.playbackRate
+    }
+    const onPlay = () => { audio.play().catch(() => {}) }
+    const onPause = () => { audio.pause() }
+    const onSeek = () => { try { audio.currentTime = video.currentTime } catch { /* not ready */ } }
+    const onRate = () => { audio.playbackRate = video.playbackRate }
+    video.addEventListener('play', onPlay)
+    video.addEventListener('pause', onPause)
+    video.addEventListener('seeking', onSeek)
+    video.addEventListener('seeked', onSeek)
+    video.addEventListener('ratechange', onRate)
+    video.addEventListener('timeupdate', align)
+    video.addEventListener('error', giveUp)
+    audio.addEventListener('error', giveUp)
+    const disarm = armAutoplay(video, audio)
+    return () => {
+      disarm()
+      video.removeEventListener('play', onPlay)
+      video.removeEventListener('pause', onPause)
+      video.removeEventListener('seeking', onSeek)
+      video.removeEventListener('seeked', onSeek)
+      video.removeEventListener('ratechange', onRate)
+      video.removeEventListener('timeupdate', align)
+      video.removeEventListener('error', giveUp)
+      audio.removeEventListener('error', giveUp)
+      audio.pause()
+    }
+    // volume and muted are applied below so a slider move doesn't reload the file
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [direct, autoPlay])
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!direct || !audio) return
+    audio.volume = volume
+    audio.muted = muted
+    if (videoRef.current) videoRef.current.muted = true
+  }, [direct, volume, muted])
+
+  // Captions are fetched only after the user turns a language on. yt-dlp takes
+  // a few seconds, so a video with captions off never starts that download.
+  useEffect(() => {
+    let cancelled = false
+    const track = (captions || []).find((item) => captionTrackKey(item) === captionLang)
+    if (!track || !window.electronAPI?.ytCaptions) {
+      captionCuesRef.current = []
+      setCaptionError('')
+      setCaptionLoading(false)
+      applyCaptionCues(videoRef.current, [])
+      return undefined
+    }
+    setCaptionLoading(true)
+    setCaptionError('')
+    window.electronAPI.ytCaptions({ videoId: id, languageCode: track.languageCode, kind: track.kind }).then((res) => {
+      if (cancelled) return
+      const cues = res?.cues || []
+      if (res?.error || !cues.length) {
+        captionCuesRef.current = []
+        setCaptionError(res?.error || "Couldn't load captions")
+        applyCaptionCues(videoRef.current, [])
+        return
+      }
+      captionCuesRef.current = cues
+      setCaptionError('')
+      applyCaptionCues(videoRef.current, cues)
+    }).catch(() => {
+      if (!cancelled) {
+        captionCuesRef.current = []
+        setCaptionError("Couldn't load captions")
+        applyCaptionCues(videoRef.current, [])
+      }
+    }).finally(() => {
+      if (!cancelled) setCaptionLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [id, captionLang, captions])
 
   const fmt = (s) => {
     if (!isFinite(s) || s < 0) return '0:00'
@@ -203,8 +364,29 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
   const togglePlay = () => {
     const video = videoRef.current
     if (!video) return
-    if (video.paused) { video.play().catch(() => {}); setPlaying(true) }
-    else { video.pause(); setPlaying(false) }
+    if (video.paused) { wantAutoRef.current = true; video.play().catch(() => {}); setPlaying(true) }
+    else { wantAutoRef.current = false; video.pause(); setPlaying(false) }
+  }
+
+  // play() right as the src is assigned often rejects. Keep trying until the
+  // media can actually start, and stop if the viewer hits pause.
+  const armAutoplay = (video, audio) => {
+    if (!video || autoPlay === false) return () => {}
+    const kick = () => {
+      if (!wantAutoRef.current) return
+      if (!video.paused) {
+        if (audio && audio.paused) audio.play().catch(() => {})
+        return
+      }
+      video.play().then(() => { if (audio) audio.play().catch(() => {}) }).catch(() => {})
+    }
+    kick()
+    video.addEventListener('loadeddata', kick)
+    video.addEventListener('canplay', kick)
+    return () => {
+      video.removeEventListener('loadeddata', kick)
+      video.removeEventListener('canplay', kick)
+    }
   }
 
   const toggleFullscreen = () => {
@@ -241,6 +423,16 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
   }
 
   const adjustVolume = (delta) => {
+    if (directRef.current && audioRef.current) {
+      const audio = audioRef.current
+      const cur = audio.muted ? 0 : audio.volume
+      const next = Math.min(1, Math.max(0, cur + delta))
+      audio.volume = next
+      audio.muted = next === 0
+      setVolume(next)
+      setMuted(next === 0)
+      return
+    }
     const video = videoRef.current
     if (!video) return
     const next = Math.min(1, Math.max(0, video.volume + delta))
@@ -258,7 +450,7 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
 
   // Official YouTube keyboard shortcuts (Space, k, j, l, m, f, arrows, etc.)
   useEffect(() => {
-    if (!streamUrl || loadingStream) return
+    if ((!streamUrl && !direct) || loadingStream) return
     // Claim the keyboard while a video is loaded so the music player's
     // always-on shortcuts stand down on this page.
     const releaseFocus = pushMediaFocus('video')
@@ -316,9 +508,33 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
         return
       }
       if (e.key === 'k' || e.key === 'K') { togglePlay(); return }
-      if (e.key === 'm' || e.key === 'M') { const v = videoRef.current; if (v) v.muted = !v.muted; return }
+      if (e.key === 'm' || e.key === 'M') {
+        if (directRef.current && audioRef.current) {
+          const audio = audioRef.current
+          audio.muted = !audio.muted
+          setMuted(audio.muted)
+          return
+        }
+        const v = videoRef.current
+        if (v) v.muted = !v.muted
+        return
+      }
       if (e.key === 'f' || e.key === 'F') { toggleFullscreen(); return }
       if (e.key === 't' || e.key === 'T') { theaterToggleRef.current?.(); return }
+      if (e.key === 'c' || e.key === 'C') {
+        const list = captionsRef.current || []
+        const current = captionLangRef.current || ''
+        if (list.some((item) => captionTrackKey(item) === current)) {
+          onCaptionLangRef.current?.('')
+          return
+        }
+        const next = list.find((item) => captionTrackKey(item) === lastCaptionRef.current)
+          || list.find((item) => item.languageCode === 'en' && item.kind !== 'asr')
+          || list.find((item) => String(item.languageCode || '').toLowerCase().startsWith('en'))
+          || list[0]
+        if (next) onCaptionLangRef.current?.(captionTrackKey(next))
+        return
+      }
       if (e.key === 'i' || e.key === 'I') {
         const pip = videoRef.current
         if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {})
@@ -366,7 +582,7 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
       releaseFocus()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streamUrl, loadingStream])
+  }, [streamUrl, direct, loadingStream])
 
   // Auto-hide controls when playing
   useEffect(() => {
@@ -402,6 +618,7 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
   }, [])
 
   const iconBtn = 'grid h-10 w-10 shrink-0 place-items-center rounded-full text-white hover:bg-white/10'
+  const captionsOn = (captions || []).some((item) => captionTrackKey(item) === captionLang)
 
   const setPlaybackRate = (s) => {
     const video = videoRef.current
@@ -435,8 +652,8 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
         ref={videoRef}
         autoPlay={autoPlay}
         playsInline
-        crossOrigin="anonymous"
-        preload="metadata"
+        preload="auto"
+        poster={`https://i.ytimg.com/vi/${id}/hqdefault.jpg`}
         className="w-full h-full bg-black"
         style={{ hardwareAcceleration: 'auto', videoDecodeAcceleration: 'auto' }}
         onPlay={() => { setPlaying(true); window.dispatchEvent(new Event('yt-video-play')) }}
@@ -469,24 +686,17 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
           if (end > 0) setSeekable(end)
         }}
         onEnded={() => { setPlaying(false); setShowControls(true) }}
-        onVolumeChange={(e) => { setVolume(e.currentTarget.volume); setMuted(e.currentTarget.muted) }}
+        onVolumeChange={(e) => {
+          if (directRef.current) return
+          setVolume(e.currentTarget.volume)
+          setMuted(e.currentTarget.muted)
+        }}
       />
+      <audio ref={audioRef} preload="auto" className="hidden" />
 
-      {(loadingStream || !streamUrl) && !streamError && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black">
-          <div className="relative">
-            <div className="w-14 h-14 rounded-full border-4 border-yt-red/25 border-t-yt-red animate-spin" />
-            <svg className="absolute inset-0 m-auto w-5 h-5 text-yt-red" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-          </div>
-          <div className="text-center">
-            <p className="text-white/90 text-base font-medium">
-              {phase === 'resolving' && 'Resolving stream sources...'}
-              {phase === 'starting' && 'Starting stream...'}
-              {phase === 'buffering' && 'Buffering video...'}
-              {!['resolving','starting','buffering'].includes(phase) && 'Preparing video...'}
-            </p>
-            <p className="text-white/40 text-xs mt-1">This can take a few seconds on first play</p>
-          </div>
+      {(loadingStream && !streamUrl && !direct) && !streamError && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="w-14 h-14 rounded-full border-4 border-white/30 border-t-white animate-spin" />
         </div>
       )}
 
@@ -505,7 +715,7 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
         </div>
       )}
 
-      {!loadingStream && !streamError && streamUrl && (
+      {!loadingStream && !streamError && (streamUrl || direct) && (
         <>
           {boosting && (
             <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
@@ -557,7 +767,27 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
                   </>
                 )}
                 {settingsPage === 'captions' && (
-                  <p className="px-4 py-3 text-white/80">No captions for this video</p>
+                  <>
+                    <button type="button" onClick={() => { onCaptionLang?.(''); setSettingsPage(null) }} className={`flex w-full items-center justify-between px-4 py-2 text-left hover:bg-white/10 ${captionsOn ? 'text-white/80' : 'text-white'}`}>
+                      <span>Off</span>
+                      {!captionsOn && <span className="text-yt-red">●</span>}
+                    </button>
+                    {captions.length === 0 && (
+                      <p className="px-4 py-3 text-white/80">No captions for this video</p>
+                    )}
+                    {captions.map((track) => {
+                      const key = captionTrackKey(track)
+                      const selected = key === captionLang
+                      return (
+                        <button key={key} type="button" onClick={() => { onCaptionLang?.(key); setSettingsPage(null) }} className={`flex w-full items-center justify-between px-4 py-2 text-left hover:bg-white/10 ${selected ? 'text-white' : 'text-white/80'}`}>
+                          <span className="truncate pr-3">{track.name || track.languageCode}</span>
+                          {selected && <span className="text-yt-red">●</span>}
+                        </button>
+                      )
+                    })}
+                    {captionLoading && <p className="px-4 py-2 text-white/60">Loading captions…</p>}
+                    {captionError && <p className="px-4 py-2 text-white/70">{captionError}</p>}
+                  </>
                 )}
               </div>
             )}
@@ -594,7 +824,16 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
                   : <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>}
               </button>
               <div className="group/vol flex items-center">
-                <button type="button" className={iconBtn} aria-label={muted || volume === 0 ? 'Unmute' : 'Mute'} onClick={() => { const v = videoRef.current; if (v) v.muted = !v.muted }}>
+                <button type="button" className={iconBtn} aria-label={muted || volume === 0 ? 'Unmute' : 'Mute'} onClick={() => {
+                  if (directRef.current && audioRef.current) {
+                    const audio = audioRef.current
+                    audio.muted = !audio.muted
+                    setMuted(audio.muted)
+                    return
+                  }
+                  const v = videoRef.current
+                  if (v) v.muted = !v.muted
+                }}>
                   {muted || volume === 0
                     ? <svg className="h-[22px] w-[22px]" fill="currentColor" viewBox="0 0 24 24"><path d="M16.5 12a4.5 4.5 0 00-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a9 9 0 003.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z" /></svg>
                     : volume < 0.5
@@ -610,9 +849,16 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
                   aria-label="Volume"
                   className="yt-vol"
                   onChange={(e) => {
+                    const next = parseFloat(e.target.value)
+                    if (directRef.current && audioRef.current) {
+                      audioRef.current.volume = next
+                      audioRef.current.muted = next === 0
+                      setVolume(next)
+                      setMuted(next === 0)
+                      return
+                    }
                     const video = videoRef.current
                     if (!video) return
-                    const next = parseFloat(e.target.value)
                     video.volume = next
                     video.muted = next === 0
                     setVolume(next)
@@ -625,7 +871,7 @@ function NativePlayer({ id, autoPlay, knownDuration = 0, title = '', theater = f
                 <span className="text-white/70"> / {fmt(totalDuration)}</span>
               </span>
               <div className="flex-1" />
-              <button type="button" className={iconBtn} title="Captions" aria-label="Captions" onClick={() => setSettingsPage(settingsPage === 'captions' ? null : 'captions')}>
+              <button type="button" className={`${iconBtn} ${captionsOn ? 'bg-white/15' : ''}`} title="Captions" aria-label="Captions" aria-pressed={captionsOn} onClick={() => setSettingsPage(settingsPage === 'captions' ? null : 'captions')}>
                 <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 24 24"><path d="M19 4H5a2 2 0 00-2 2v12a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2zm-8 7.5H9.5v-.75h-2v3.5h2V13H11v1.25A1.25 1.25 0 019.75 15.5h-3.5A1.25 1.25 0 015 14.25v-4.5A1.25 1.25 0 016.25 8.5h3.5A1.25 1.25 0 0111 9.75V11zm7 0h-1.5v-.75h-2v3.5h2V13H18v1.25a1.25 1.25 0 01-1.25 1.25h-3.5A1.25 1.25 0 0112 14.25v-4.5A1.25 1.25 0 0113.25 8.5h3.5A1.25 1.25 0 0118 9.75V11z" /></svg>
               </button>
               <button type="button" className={iconBtn} title="Settings" aria-label="Settings" onClick={() => setSettingsPage(settingsPage && settingsPage !== 'captions' ? null : 'root')}>
@@ -832,6 +1078,7 @@ function RecommendedRow({ video }) {
   return (
     <Link
       to={`/video/${video.id}`}
+      onPointerDown={() => prewarmNow(video.id)}
       onMouseEnter={() => prewarmOnHover(video.id)}
       className="flex gap-3 rounded-xl p-1.5 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
     >
@@ -860,7 +1107,7 @@ export default function VideoDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { startDownload, activeDownloads, completedDownloads, playFile, cancelDownload } = useDownloads()
-  const { settings } = useSettings()
+  const { settings, updateSetting } = useSettings()
   const { recordWatch } = useSubscriptions()
   const { isInWatchLater, toggleWatchLater } = useWatchLater()
   const { addToast } = useToast()
@@ -1043,10 +1290,7 @@ export default function VideoDetail() {
     <div className={`watch-layout ${theater ? 'is-theater' : 'max-w-7xl mx-auto'}`}>
       <div className="flex flex-col lg:flex-row gap-8">
         <div className="flex-1 min-w-0">
-          {loadingInfo ? (
-            <SkeletonPlayer />
-          ) : (
-            <div>
+          <div>
               <div className={theater && !playingLocal && settings.playbackMode === 'inApp'
                 ? 'watch-player is-theater'
                 : 'watch-player relative aspect-video bg-black rounded-xl overflow-hidden shadow-xl ring-1 ring-white/10'}>
@@ -1060,7 +1304,12 @@ export default function VideoDetail() {
                     title={videoInfo?.title || ''}
                     theater={theater}
                     onToggleTheater={() => setTheater((on) => !on)}
+                    captions={videoInfo?.captions || EMPTY_CAPTIONS}
+                    captionLang={settings.captionLang || ''}
+                    onCaptionLang={(value) => updateSetting('captionLang', value)}
                   />
+                ) : loadingInfo ? (
+                  <SkeletonPlayer />
                 ) : (
                   <iframe
                     key={id}
@@ -1232,7 +1481,6 @@ export default function VideoDetail() {
               )}
               <Comments videoId={id} />
             </div>
-          )}
         </div>
 
         <div className="lg:w-[22.5rem] shrink-0">

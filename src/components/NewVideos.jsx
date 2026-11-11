@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { prewarmOnHover } from '../lib/prewarm'
+import { prewarmNow, prewarmOnHover } from '../lib/prewarm'
 import VideoMenu from './VideoMenu'
 
 function SkeletonCard() {
@@ -22,7 +22,7 @@ function VideoCard({ video }) {
     if (video.channel) navigate(`/channel/${encodeURIComponent(video.channel)}`)
   }
   return (
-    <Link to={`/video/${video.id}`} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col">
+    <Link to={`/video/${video.id}`} onPointerDown={() => prewarmNow(video.id)} onMouseEnter={() => prewarmOnHover(video.id)} className="group flex flex-col">
       <div className="relative aspect-video bg-neutral-200 dark:bg-neutral-900 rounded-md overflow-hidden">
           {video.thumbnail ? (
             <img src={video.thumbnail} alt={video.title} className="w-full h-full object-cover" loading="lazy" />

@@ -2373,6 +2373,48 @@ async function loadFypMore({ cursor = 0, seen = [] } = {}) {
 }
 
 
+function captionName(node) {
+  if (!node) return ''
+  if (typeof node.simpleText === 'string') return node.simpleText
+  if (Array.isArray(node.runs)) return node.runs.map((r) => r.text || '').join('')
+  return ''
+}
+
+function captionTracksFromList(list) {
+  if (!Array.isArray(list)) return []
+  const out = []
+  const seen = new Set()
+  for (const track of list) {
+    const languageCode = String(track?.languageCode || '').trim()
+    if (!/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(languageCode)) continue
+    const kind = track.kind === 'asr' ? 'asr' : 'manual'
+    const key = `${languageCode}:${kind}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ languageCode, name: captionName(track.name) || languageCode, kind })
+  }
+  return out
+}
+
+function captionTracksFromHtml(html) {
+  if (!html || typeof html !== 'string') return []
+  const marker = '"captionTracks":'
+  const at = html.indexOf(marker)
+  if (at < 0) return []
+  const start = at + marker.length
+  let depth = 0
+  let end = start
+  for (; end < html.length && end < start + 200000; end++) {
+    const ch = html[end]
+    if (ch === '[') depth++
+    else if (ch === ']') {
+      depth--
+      if (depth === 0) { end++; break }
+    }
+  }
+  try { return captionTracksFromList(JSON.parse(html.slice(start, end))) } catch { return [] }
+}
+
 async function getVideoInfo(videoId) {
   if (!videoId) return { info: null, error: 'No video ID' }
   // oembed (title/channel/thumbnail) and the watch page (duration/description/
@@ -2395,15 +2437,103 @@ async function getVideoInfo(videoId) {
         if (vm) viewCount = Number(vm[1]).toLocaleString()
       }
     } catch { /* oembed still usable */ }
-    return { info: { id: videoId, title: oembed.title || '', channel: oembed.author_name || '', views: viewCount, duration, description, thumbnail: oembed.thumbnail_url || '' }, error: null }
+    return { info: { id: videoId, title: oembed.title || '', channel: oembed.author_name || '', views: viewCount, duration, description, thumbnail: oembed.thumbnail_url || '', captions: captionTracksFromHtml(html) }, error: null }
   }
   // oembed failed → the innertube player endpoint has every field anyway.
   try {
     const data = await ytPost(`${YOUTUBE_PLAYER_URL}?key=${YOUTUBE_KEY}`, { context: { client: WEB_CLIENT }, videoId })
     const vd = data.videoDetails || {}
     const t = vd.thumbnail?.thumbnails || []
-    return { info: { id: videoId, title: vd.title || '', channel: vd.author || '', views: vd.viewCount ? Number(vd.viewCount).toLocaleString() : '', duration: vd.lengthSeconds ? fmtDuration(parseInt(vd.lengthSeconds)) : '', description: vd.shortDescription || '', thumbnail: t.length ? t[t.length - 1].url : '' }, error: null }
+    const captions = captionTracksFromList(data?.captions?.playerCaptionsTracklistRenderer?.captionTracks)
+    return { info: { id: videoId, title: vd.title || '', channel: vd.author || '', views: vd.viewCount ? Number(vd.viewCount).toLocaleString() : '', duration: vd.lengthSeconds ? fmtDuration(parseInt(vd.lengthSeconds)) : '', description: vd.shortDescription || '', thumbnail: t.length ? t[t.length - 1].url : '', captions }, error: null }
   } catch (e) { return { info: null, error: (oembedRes.reason && oembedRes.reason.message) || e.message } }
+}
+
+const captionCueCache = new Map()
+
+function parseVtt(text) {
+  const cues = []
+  const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/)
+  const stamp = /(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})\s+-->\s+(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})/
+  const seconds = (h, m, s, ms) => (parseInt(h || '0', 10) * 3600) + (parseInt(m, 10) * 60) + parseInt(s, 10) + (parseInt(ms, 10) / 1000)
+  let i = 0
+  while (i < lines.length) {
+    const match = lines[i].match(stamp)
+    if (!match) { i++; continue }
+    const start = seconds(match[1], match[2], match[3], match[4])
+    const end = seconds(match[5], match[6], match[7], match[8])
+    const parts = []
+    i++
+    while (i < lines.length && lines[i].trim() !== '') {
+      parts.push(lines[i])
+      i++
+    }
+    const cueText = parts.join('\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&nbsp;/g, ' ')
+      .trim()
+    if (cueText && end > start) cues.push({ start, end, text: cueText })
+  }
+  return cues
+}
+
+function loadCaptionCues(videoId, languageCode, kind) {
+  const id = String(videoId || '').trim()
+  const lang = String(languageCode || '').trim()
+  const trackKind = kind === 'asr' ? 'asr' : 'manual'
+  if (!id || !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(lang)) {
+    return Promise.resolve({ cues: [], error: "Couldn't load captions" })
+  }
+  const cacheKey = `${id}|${lang}|${trackKind}`
+  const cached = captionCueCache.get(cacheKey)
+  if (cached) return Promise.resolve({ cues: cached, error: null })
+  return new Promise((resolve) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kovatube-caps-'))
+    const args = [
+      '--js-runtimes', 'node',
+      '--skip-download',
+      '--no-playlist',
+      '--no-colors',
+      '--sub-format', 'vtt',
+      '--sub-langs', lang,
+      trackKind === 'asr' ? '--write-auto-subs' : '--write-subs',
+      '-o', path.join(dir, 'cap'),
+      `https://www.youtube.com/watch?v=${id}`,
+    ]
+    const proc = spawnTool('yt-dlp', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    })
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* temp dir already gone */ }
+      resolve(result)
+    }
+    const timer = setTimeout(() => {
+      try { if (!proc.killed) proc.kill('SIGKILL') } catch { /* already exited */ }
+      finish({ cues: [], error: "Couldn't load captions" })
+    }, 30000)
+    proc.on('error', () => { clearTimeout(timer); finish({ cues: [], error: "Couldn't load captions" }) })
+    proc.on('close', () => {
+      clearTimeout(timer)
+      if (settled) return
+      try {
+        const files = fs.readdirSync(dir).filter((name) => name.endsWith('.vtt'))
+        const preferred = files.find((name) => name === `cap.${lang}.vtt`) || files[0]
+        const cues = preferred ? parseVtt(fs.readFileSync(path.join(dir, preferred), 'utf8')) : []
+        if (!cues.length) { finish({ cues: [], error: "Couldn't load captions" }); return }
+        captionCueCache.set(cacheKey, cues)
+        finish({ cues, error: null })
+      } catch {
+        finish({ cues: [], error: "Couldn't load captions" })
+      }
+    })
+  })
 }
 
 // ─── Channel page (videos + description from one profile) ──────────────────
@@ -3906,7 +4036,7 @@ function getDownloadedPlaylists() {
       .slice()
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
       .map((t) => {
-        const fp = t.filePath && fs.existsSync(t.filePath) ? t.filePath : ''
+        const fp = storedAudioPath(t)
         if (!fp) return null
         let size = 0
         try { size = fs.statSync(fp).size } catch {}
@@ -3916,8 +4046,8 @@ function getDownloadedPlaylists() {
           title: t.title || t.fileName || 'Unknown track',
           artist: t.artist || '',
           duration: t.duration || '',
-          thumbnail: t.thumbnail || '',
-          fileName: t.fileName || path.basename(fp),
+          thumbnail: thumbUrlFor(t.videoId) || t.thumbnail || '',
+          fileName: path.basename(fp),
           filePath: fp,
           totalBytes: size,
           format: path.extname(fp),
@@ -3931,7 +4061,7 @@ function getDownloadedPlaylists() {
       id: pl.id,
       title: pl.title || 'Playlist',
       artist: pl.artist || '',
-      thumbnail: pl.thumbnail || tracks[0].thumbnail || '',
+      thumbnail: thumbUrlFor(tracks[0].videoId) || tracks[0].thumbnail || pl.thumbnail || '',
       browseId: pl.browseId || '',
       createdAt: pl.createdAt || '',
       updatedAt: pl.updatedAt || '',
@@ -4099,6 +4229,9 @@ async function getAudioStream(videoId, opts = {}) {
 const streamProcesses = new Map() // videoId -> { ffmpeg, ytdlp, dir }
 const streamUrlCache = new Map() // cacheKey -> { ts, videoUrl, audioUrl } (DASH URLs expire ~6h)
 const streamUrlInflight = new Map() // cacheKey -> Promise (shared while resolving)
+// Innertube URLs that only serve the first part of the file. Skip the fast
+// path for these and resolve with yt-dlp instead.
+const innertubeBlocked = new Set()
 
 // YouTube lists every dub as its own audio format. Playback prefers English
 // (original English first, then an English dub). Music passes preferEnglish:false
@@ -4280,6 +4413,7 @@ async function verifyPairReadable(pair) {
 }
 
 async function resolveInnertube(videoId, quality, preferEnglish = true) {
+  if (innertubeBlocked.has(videoId)) return { ok: false, reason: 'innertube blocked after capped URLs' }
   for (const c of INNERTUBE_STREAM_CLIENTS) {
     const t0 = Date.now()
     try {
@@ -4291,12 +4425,24 @@ async function resolveInnertube(videoId, quality, preferEnglish = true) {
       const data = res.data
       const pair = pickInnertubePair(data, quality, preferEnglish)
       if (pair) {
-        if (await verifyPairReadable(pair)) {
-          console.log(`[stream] innertube ${c.label} hit ${Date.now() - t0}ms h=${pair.height} audio=${pair.audioLabel} (readable)`)
-          return { ok: true, ...pair }
-        }
-        console.log(`[stream] innertube ${c.label} rejected ${Date.now() - t0}ms (teaser-capped URLs)`)
-        continue
+        // Play immediately. The deep read used to block the first frame for
+        // seconds; it now runs beside playback and only steps in if the URL
+        // is a teaser that dies partway through.
+        console.log(`[stream] innertube ${c.label} hit ${Date.now() - t0}ms h=${pair.height} audio=${pair.audioLabel}`)
+        const snapshot = { videoUrl: pair.videoUrl, audioUrl: pair.audioUrl }
+        verifyPairReadable(pair).then((ok) => {
+          if (ok) {
+            console.log(`[stream] innertube ${c.label} readable`)
+            return
+          }
+          console.log(`[stream] innertube ${c.label} teaser-capped, falling back`)
+          innertubeBlocked.add(videoId)
+          for (const [key, val] of streamUrlCache) {
+            if (val && val.videoUrl === snapshot.videoUrl) streamUrlCache.delete(key)
+          }
+          sendToRenderer('stream-capped', { videoId })
+        })
+        return { ok: true, ...pair }
       }
       console.log(`[stream] innertube ${c.label} miss ${Date.now() - t0}ms (${data?.playabilityStatus?.status || data?.error?.message || 'no usable URLs'})`)
     } catch (e) {
@@ -4500,14 +4646,23 @@ async function startRelayAndWait(videoId, urls, phase) {
   return { ok: true }
 }
 
-async function startPlaybackStream(videoId, quality, onPhase) {
+async function startPlaybackStream(videoId, quality, onPhase, useRelay = false) {
   const t0 = Date.now()
   const phase = (label) => { if (onPhase) { try { onPhase(label) } catch {} } }
   phase('resolving')
-  let urls = await getMediaUrls(videoId, quality)
+  let urls = await getMediaUrls(videoId, quality, useRelay && innertubeBlocked.has(videoId) ? { forceYtDlp: true } : {})
   if (!urls.ok) return { ok: false, reason: urls.reason }
   const tResolve = Date.now() - t0
   let source = urls.source || 'ytdlp'
+
+  // avc1 + m4a play in the media element. Skipping the ffmpeg remux is what
+  // makes a click start immediately instead of waiting on a playlist.
+  if (!useRelay && urls.videoUrl && urls.audioUrl) {
+    stopStream(videoId)
+    phase('playing')
+    console.log(`[stream-timing] id=${videoId} source=${source} direct resolve=${tResolve}ms`)
+    return { ok: true, direct: true, videoUrl: urls.videoUrl, audioUrl: urls.audioUrl, source }
+  }
 
   const tRelay = Date.now()
   let relay = await startRelayAndWait(videoId, urls, phase)
@@ -4564,6 +4719,7 @@ const DEFAULT_SETTINGS = {
   welcomed: false,
   navPosition: 'side',     // 'side' | 'top'
   lyricAnimation: 'karaoke', // 'karaoke' | 'rise' | 'glow' | 'bounce' | 'fade'
+  captionLang: '', // '' off, otherwise 'en' or 'en:asr'
 }
 
 let settingsCache = { ...DEFAULT_SETTINGS }
@@ -5019,12 +5175,16 @@ function startManualYtDlp(dlId) {
       dl.speed = 0
 
       const targetDir = dl.dir || VIDEOS_DIR
-      const candidates = fs.readdirSync(targetDir).filter(f => f.includes(dl.videoId))
-      if (candidates.length > 0) {
-        dl.fileName = candidates[0]
-        dl.filePath = path.join(targetDir, candidates[0])
-      } else if (dl.fileName) {
-        dl.filePath = path.join(targetDir, dl.fileName)
+      // Sidecars (.lrc/.txt) sit beside the audio and their names also contain
+      // the video id. The first directory entry is often the lyrics file, which
+      // then gets saved as the track and will not play.
+      const found = findMediaFileIn(targetDir, dl.videoId, { prefer: dl.audio ? 'audio' : 'video' }) || findMediaFile(dl.videoId)
+      if (found) {
+        dl.fileName = path.basename(found)
+        dl.filePath = found
+      } else if (dl.fileName && !/\.(lrc|txt)$/i.test(dl.fileName)) {
+        const candidate = path.join(targetDir, dl.fileName)
+        if (fs.existsSync(candidate)) dl.filePath = candidate
       }
 
       try {
@@ -5201,6 +5361,23 @@ async function downloadPlaylist({ playlist, tracks, concurrency = 2 } = {}) {
   return { batchId, total: list.length, started: true, playlistId }
 }
 
+// One download per video id, even when two playlists ask for the same song at
+// once. A file already on disk is reused instead of starting yt-dlp again.
+const audioJobs = new Map()
+
+function adoptAudioFile(videoId, starter) {
+  const existing = findMediaFile(videoId)
+  if (existing && isAudioFile(existing)) {
+    return Promise.resolve({ ok: true, filePath: existing, reused: true })
+  }
+  const pending = audioJobs.get(videoId)
+  if (pending) return pending
+  const job = Promise.resolve().then(starter)
+  audioJobs.set(videoId, job)
+  job.finally(() => { if (audioJobs.get(videoId) === job) audioJobs.delete(videoId) })
+  return job
+}
+
 // Download a set of ordered tracks into an already-registered playlist, a few at
 // a time; each track is matched back to its saved slot by its order index.
 // Shared by the manual "Download this playlist" action and by auto-sync.
@@ -5213,16 +5390,23 @@ async function downloadPlaylistTracks(playlistId, items, { concurrency = 2 } = {
     while (idx < list.length) {
       const t = list[idx++]
       try {
-        const dlId = await startDownload(
-          t.videoId, 'audio', 'mp3', t.title || '', t.thumbnail || '', true,
-          { artist: t.artist || '', duration: t.duration || '', withLyrics: true },
-        )
-        const dl = activeDownloads.get(dlId)
-        const res = dl && dl.done ? await dl.done : { ok: false }
+        const res = await adoptAudioFile(t.videoId, async () => {
+          const dlId = await startDownload(
+            t.videoId, 'audio', 'mp3', t.title || '', t.thumbnail || '', true,
+            { artist: t.artist || '', duration: t.duration || '', withLyrics: true },
+          )
+          const dl = activeDownloads.get(dlId)
+          return dl && dl.done ? await dl.done : { ok: false }
+        })
         if (res && res.ok) {
           state.completed++
-          const filePath = res.filePath || (dl && dl.filePath) || ''
-          const fileName = filePath ? path.basename(filePath) : (dl && dl.fileName) || ''
+          const filePath = res.filePath || ''
+          if (res.reused && filePath && !lyricsSidecarFor(filePath)) {
+            await writeLyricsSidecar({
+              filePath, videoId: t.videoId, title: t.title || '', artist: t.artist || '', duration: t.duration || '',
+            })
+          }
+          const fileName = filePath ? path.basename(filePath) : ''
           updatePlaylistTrack(playlistId, t.order, { fileName, filePath, status: 'done' })
         } else {
           state.failed++
@@ -5336,10 +5520,12 @@ function reconcilePlaylistTracks({ existing = [], fetched = [], inFlight = new S
     dirty = true
   }
 
-  // Slots needing a download: no file on disk, and not already downloading.
+  // Slots needing a download: no audio file on disk, and not already downloading.
+  // A lyrics sidecar is not the song — a path that exists but is not audio
+  // still needs the real file (usually already downloaded for another playlist).
   const queue = tracks
     .filter((t) => {
-      if (t.filePath && fileExists(t.filePath)) return false
+      if (t.filePath && isAudioFile(t.filePath) && fileExists(t.filePath)) return false
       return !inFlight.has(t.videoId)
     })
     .map((t) => ({ ...t }))
@@ -5639,12 +5825,13 @@ function startSmartDownload(videoId, url, onDone, source = 'fyp') {
       dl.progress = 100
       dl.speed = ''
 
-      const candidates = fs.readdirSync(VIDEOS_DIR).filter(f => f.includes(videoId))
-      if (candidates.length > 0) {
-        dl.fileName = candidates[0]
-        dl.filePath = path.join(VIDEOS_DIR, candidates[0])
-      } else if (dl.fileName) {
-        dl.filePath = path.join(VIDEOS_DIR, dl.fileName)
+      const found = findMediaFileIn(VIDEOS_DIR, videoId, { prefer: 'video' })
+      if (found) {
+        dl.fileName = path.basename(found)
+        dl.filePath = found
+      } else if (dl.fileName && !/\.(lrc|txt)$/i.test(dl.fileName)) {
+        const candidate = path.join(VIDEOS_DIR, dl.fileName)
+        if (fs.existsSync(candidate)) dl.filePath = candidate
       }
 
       try {
@@ -5794,16 +5981,41 @@ function stopClipboardWatcher() {
 
 // ─── Smart Download: For You recommendations (default source) ───────────────
 
-// Find the media file for a video id in either media folder (sidecars excluded).
+// Find the media file for a video id. Lyric sidecars share the id in their
+// name, so only real audio/video extensions count, and audio wins unless the
+// caller is finishing a video download.
+function findMediaFileIn(dir, videoId, { prefer = 'audio' } = {}) {
+  if (!videoId || !dir) return ''
+  let names = []
+  try { names = fs.readdirSync(dir) } catch { return '' }
+  const media = names.filter((name) => {
+    if (!name.includes(`[${videoId}]`)) return false
+    if (/\.(lrc|txt|part|ytdl)$/i.test(name)) return false
+    const ext = path.extname(name).toLowerCase()
+    return AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext)
+  })
+  const audio = media.find((name) => AUDIO_EXTS.has(path.extname(name).toLowerCase()))
+  const video = media.find((name) => VIDEO_EXTS.has(path.extname(name).toLowerCase()))
+  const pick = prefer === 'video' ? (video || audio) : (audio || video)
+  return pick ? path.join(dir, pick) : ''
+}
+
 function findMediaFile(videoId) {
   if (!videoId) return ''
-  for (const dir of MEDIA_DIRS) {
-    try {
-      const f = fs.readdirSync(dir).find(x => x.includes(`[${videoId}]`) && !/\.(lrc|txt)$/i.test(x))
-      if (f) return path.join(dir, f)
-    } catch { /* folder may not exist yet */ }
+  for (const dir of [...MEDIA_DIRS, DOWNLOADS_DIR]) {
+    const found = findMediaFileIn(dir, videoId)
+    if (found) return found
   }
   return ''
+}
+
+// The path a playlist slot should play. A saved path that points at a lyrics
+// sidecar is ignored in favour of the audio file for that video id.
+function storedAudioPath(track) {
+  const saved = track && track.filePath
+  if (saved && isAudioFile(saved) && fs.existsSync(saved)) return saved
+  const found = findMediaFile(track && track.videoId)
+  return found && isAudioFile(found) ? found : ''
 }
 
 // True if a video id is already on disk (as a downloaded file) — we never
@@ -5821,13 +6033,12 @@ function repairPlaylistPaths() {
   for (const p of list) {
     for (const t of (p && p.tracks) || []) {
       if (!t || !t.videoId) continue
-      if (t.filePath && fs.existsSync(t.filePath)) continue
-      const found = findMediaFile(t.videoId)
-      if (found) {
-        t.filePath = found
-        t.fileName = path.basename(found)
-        changed = true
-      }
+      const found = storedAudioPath(t)
+      if (!found || found === t.filePath) continue
+      t.filePath = found
+      t.fileName = path.basename(found)
+      if (t.status !== 'done') t.status = 'done'
+      changed = true
     }
   }
   if (changed) writePlaylists(list)
@@ -6250,11 +6461,38 @@ function fetchHttpsBuffer(url, redirects = 0) {
   })
 }
 
+// Saved covers are ytfile:// thumbs. Read those from disk so the shader and
+// the wash still have artwork with no network. Remote https stays a fetch.
+function readThumbBuffer(url) {
+  if (typeof url !== 'string' || !url.startsWith('ytfile://')) return null
+  let filePath = ''
+  try { filePath = path.normalize(decodeURIComponent(new URL(url).pathname)) } catch { return null }
+  const ext = path.extname(filePath).toLowerCase()
+  if (!['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext)) return null
+  try {
+    if (!fs.existsSync(THUMBS_DIR) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return null
+    const root = fs.realpathSync(THUMBS_DIR)
+    const real = fs.realpathSync(filePath)
+    if (real !== root && !real.startsWith(root + path.sep)) return null
+    const buf = fs.readFileSync(real)
+    if (!buf || buf.length < 32 || buf.length > 8_000_000) return null
+    return buf
+  } catch { return null }
+}
+
+async function coverSourceBuffer(url) {
+  if (typeof url !== 'string' || !url) return null
+  if (url.startsWith('ytfile://')) return readThumbBuffer(url)
+  if (!url.startsWith('https://')) return null
+  return fetchHttpsBuffer(url)
+}
+
 async function coverPalette(url) {
-  if (typeof url !== 'string' || !url.startsWith('https://')) return null
+  if (typeof url !== 'string' || (!url.startsWith('https://') && !url.startsWith('ytfile://'))) return null
   const hit = coverPaletteCache.get(url)
   if (hit) return hit
-  const buf = await fetchHttpsBuffer(url)
+  const buf = await coverSourceBuffer(url)
+  if (!buf) return null
   const image = nativeImage.createFromBuffer(buf)
   const size = image.getSize()
   if (!size.width || !size.height) return null
@@ -6280,10 +6518,10 @@ function imageMime(buf) {
 // A same-origin data URL so the fluid cover shader can sample the artwork.
 // YouTube thumbnails omit CORS, which leaves a WebGL texture blank.
 async function coverImageDataUrl(url) {
-  if (typeof url !== 'string' || !url.startsWith('https://')) return null
+  if (typeof url !== 'string' || (!url.startsWith('https://') && !url.startsWith('ytfile://'))) return null
   const hit = coverImageCache.get(url)
   if (hit) return hit
-  const buf = await fetchHttpsBuffer(url)
+  const buf = await coverSourceBuffer(url)
   if (!buf || buf.length < 32) return null
   const dataUrl = `data:${imageMime(buf)};base64,${buf.toString('base64')}`
   coverImageCache.set(url, dataUrl)
@@ -6463,6 +6701,11 @@ function setupIPC() {
     return getVideoInfo(videoId)
   })
 
+  ipcMain.handle('yt-captions', async (_e, args) => {
+    const a = args || {}
+    return loadCaptionCues(a.videoId, a.languageCode, a.kind)
+  })
+
   ipcMain.handle('yt-comments', async (_e, args) => {
     const a = args || {}
     return loadComments(a.videoId, a.continuation || '')
@@ -6514,14 +6757,14 @@ function setupIPC() {
   ipcMain.handle('yt-extract-id', (_e, url) => extractVideoId(url))
 
   // Streaming (native in-app player)
-  ipcMain.handle('yt-stream', async (event, videoId, quality) => {
-    console.log('[IPC] yt-stream:', videoId, 'quality=', quality || 'auto')
+  ipcMain.handle('yt-stream', async (event, videoId, quality, relay) => {
+    console.log('[IPC] yt-stream:', videoId, 'quality=', quality || 'auto', relay ? 'relay' : 'direct')
     if (!videoId) return { ok: false, reason: 'No video ID' }
     const r = await startPlaybackStream(videoId, quality || settingsCache.defaultQuality || 'auto', (phase) => {
       if (event.sender && !event.sender.isDestroyed()) {
         event.sender.send('stream-phase', { videoId, phase })
       }
-    })
+    }, !!relay)
     if (r.ok) {
       r.id = videoId
     }

@@ -6,16 +6,26 @@
 const requested = new Set()
 let timer = null
 
+function kick(videoId) {
+  if (!videoId || requested.has(videoId) || !window.electronAPI?.ytPrewarm) return
+  requested.add(videoId)
+  window.electronAPI.ytPrewarm(videoId).catch(() => {})
+}
+
 export function prewarmOnHover(videoId) {
   if (!videoId || requested.has(videoId) || !window.electronAPI?.ytPrewarm) return
   clearTimeout(timer)
   // Only prewarm once the pointer LINGERS (~200ms) — a fast sweep across the
   // grid shouldn't spawn resolution for every card it crosses.
-  timer = setTimeout(() => {
-    if (requested.has(videoId)) return
-    requested.add(videoId)
-    window.electronAPI.ytPrewarm(videoId).catch(() => {})
-  }, 200)
+  timer = setTimeout(() => kick(videoId), 200)
+}
+
+// Pointer-down is the click itself. Start resolving before the page changes
+// so the player can begin as soon as it mounts.
+export function prewarmNow(videoId) {
+  clearTimeout(timer)
+  timer = null
+  kick(videoId)
 }
 
 export function cancelPrewarmHover() {
