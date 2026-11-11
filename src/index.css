@@ -127,6 +127,10 @@ html.music-apple .ambient-stage input[type='range'].range-minimal::-webkit-slide
 html.music-apple .np-apple input[type='range'].range-minimal::-webkit-slider-thumb {
   background: #fff;
 }
+html.music-apple .music-card .relative::after {
+  background-color: #fff;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23111' d='M9 7v10l8-5z'/%3E%3C/svg%3E");
+}
 .apple-play {
   width: 78px;
   height: 78px;
