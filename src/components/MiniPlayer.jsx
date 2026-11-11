@@ -301,10 +301,11 @@ function SyncControl({ offset, onChange, ambient }) {
 // with elapsed/total time, the whole transport, and volume. Opened from the
 // sheet's maximise button or with `F`; the close button or Esc dismisses it.
 // It reuses the ambient styling so both dark, immersive views stay in step.
-function PlayerBackdrop({ thumbnail, wash, shader, audio, playing, blur }) {
+function PlayerBackdrop({ thumbnail, wash, shader, audio, playing, blur, solid }) {
   const scrim = wash ? 'from-black/20 via-black/35 to-black/55' : 'from-black/40 via-black/55 to-black/85'
   return (
     <>
+      {solid ? <div className="absolute inset-0 bg-black" /> : null}
       {shader && thumbnail ? (
         <CoverShader url={thumbnail} audio={audio} playing={playing} />
       ) : null}
@@ -313,11 +314,11 @@ function PlayerBackdrop({ thumbnail, wash, shader, audio, playing, blur }) {
           src={thumbnail}
           alt=""
           referrerPolicy="no-referrer"
-          className={`ambient-img absolute inset-0 w-full h-full object-cover scale-125 blur-3xl ${wash ? 'opacity-30' : 'opacity-50'}`}
+          className={`ambient-img absolute inset-0 w-full h-full object-cover scale-125 blur-3xl ${solid ? 'opacity-100' : wash ? 'opacity-30' : 'opacity-50'}`}
         />
       ) : null}
-      {!shader && blur && !thumbnail ? <div className="absolute inset-0 bg-neutral-900" /> : null}
-      {(shader || blur) ? (
+      {!shader && !thumbnail ? <div className="absolute inset-0 bg-neutral-950" /> : null}
+      {!solid && (shader || blur) ? (
         <div className={`absolute inset-0 pointer-events-none bg-gradient-to-b ${scrim}`} />
       ) : null}
     </>
@@ -770,10 +771,10 @@ export default function MiniPlayer() {
 
   return (
     <>
-      {/* Ambient mode: full-screen cover art + lyrics over a blurred backdrop */}
+      {/* Ambient mode: lyrics over an opaque cover shader. */}
       {ambient && (
-        <div className="fixed inset-0 z-[70] flex flex-col overflow-hidden animate-fade-in" style={coverWashStyle(coverWash)}>
-          <PlayerBackdrop thumbnail={current.thumbnail} wash={coverWash} shader={shaderOn} audio={audioEl} playing={playing} blur />
+        <div className="ambient-stage fixed inset-0 z-[70] flex flex-col overflow-hidden bg-black animate-fade-in">
+          <PlayerBackdrop thumbnail={current.thumbnail} wash={coverWash} shader={!!current.thumbnail} audio={audioEl} playing={playing} blur={false} solid />
 
           {/* Top bar */}
           <div className="relative z-10 flex items-center justify-between px-4 sm:px-6 py-3">
@@ -831,7 +832,6 @@ export default function MiniPlayer() {
           {hasSynced && (
             <div className="relative z-10 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 pb-1">
               <SyncControl offset={lyricOffset} onChange={setLyricOffset} ambient />
-              <button type="button" onClick={() => updateSetting('lyricShader', !shaderOn)} aria-pressed={shaderOn} className={`h-8 px-3 rounded-full text-xs font-medium transition-colors ${shaderOn ? 'bg-white text-gray-900' : 'bg-white/10 text-white/70 hover:text-white'}`}>Shader</button>
             </div>
           )}
 
@@ -846,7 +846,7 @@ export default function MiniPlayer() {
                   if (duration) seek(((e.clientX - rect.left) / rect.width) * duration)
                 }}
               >
-                <div className="h-full rounded-full bg-yt-red transition-[width] duration-150" style={{ width: `${pct}%` }} />
+                <div className={`h-full rounded-full transition-[width] duration-150 ${apple ? 'bg-white' : 'bg-yt-red'}`} style={{ width: `${pct}%` }} />
               </div>
               <span className="text-[11px] tabular-nums text-white/60 w-10">{fmt(duration)}</span>
             </div>
@@ -946,7 +946,7 @@ export default function MiniPlayer() {
             if (duration) seek(((e.clientX - rect.left) / rect.width) * duration)
           }}
         >
-          <div className="h-full bg-yt-red" style={{ width: `${pct}%` }} />
+          <div className={`h-full ${apple ? 'bg-white' : 'bg-yt-red'}`} style={{ width: `${pct}%` }} />
         </div>
         <button
           type="button"
@@ -972,7 +972,7 @@ export default function MiniPlayer() {
           <button
             onClick={toggle}
             aria-label={playing ? 'Pause' : 'Play'}
-            className="flex items-center justify-center w-9 h-9 rounded-full bg-yt-red text-white hover:bg-yt-red-hover transition-transform hover:scale-105 active:scale-95"
+            className={`flex items-center justify-center w-9 h-9 rounded-full transition-transform hover:scale-105 active:scale-95 ${apple ? 'bg-white text-black' : 'bg-yt-red text-white hover:bg-yt-red-hover'}`}
           >
             {loading ? (
               <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin" fill="none">
@@ -1021,7 +1021,7 @@ export default function MiniPlayer() {
           aria-hidden
         >
           <div className="absolute bottom-1.5 left-0 right-0 h-[3px] rounded-full bg-black/10 dark:bg-white/15">
-            <div className="h-full rounded-full bg-yt-red" style={{ width: `${pct}%` }} />
+            <div className={`h-full rounded-full ${apple ? 'bg-white' : 'bg-yt-red'}`} style={{ width: `${pct}%` }} />
           </div>
         </div>
 
@@ -1036,7 +1036,7 @@ export default function MiniPlayer() {
         <button
           onClick={toggle}
           aria-label={playing ? 'Pause' : 'Play'}
-          className="flex items-center justify-center w-9 h-9 rounded-full bg-yt-red text-white hover:bg-yt-red-hover transition-transform hover:scale-105 active:scale-95 shrink-0"
+          className={`flex items-center justify-center w-9 h-9 rounded-full transition-transform hover:scale-105 active:scale-95 shrink-0 ${apple ? 'bg-white text-black' : 'bg-yt-red text-white hover:bg-yt-red-hover'}`}
         >
           {loading ? (
             <svg viewBox="0 0 24 24" className="w-5 h-5 animate-spin" fill="none">

@@ -1,3 +1,4 @@
+import { api } from '../lib/bridge'
 import { createContext, useContext, useState, useCallback } from 'react'
 
 const SearchContext = createContext()
@@ -20,8 +21,8 @@ export function SearchProvider({ children }) {
     setIsHomeFeed(false)
 
     try {
-      if (window.electronAPI) {
-        const data = await window.electronAPI.ytSearch(searchQuery)
+      if (api) {
+        const data = await api.ytSearch(searchQuery)
         if (data.error) {
           setError(data.error)
           setResults({ videos: [], shorts: [] })
@@ -49,8 +50,8 @@ export function SearchProvider({ children }) {
     setIsHomeFeed(true)
 
     try {
-      if (window.electronAPI) {
-        const data = await window.electronAPI.ytHomeFeed()
+      if (api) {
+        const data = await api.ytHomeFeed()
         if (data.error && !(data.videos?.length || data.shorts?.length)) {
           setError(data.error)
           setResults({ videos: [], shorts: [] })

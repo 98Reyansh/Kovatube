@@ -1,3 +1,4 @@
+import { api } from '../lib/bridge'
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { useToast } from './ToastContext'
 
@@ -12,7 +13,7 @@ export function LikedSongsProvider({ children }) {
 
   useEffect(() => {
     let alive = true
-    window.electronAPI?.ytMusicLikedIds?.()
+    api?.ytMusicLikedIds?.()
       .then((list) => {
         if (!alive || !Array.isArray(list)) return
         setIds(new Set(list))
@@ -25,7 +26,7 @@ export function LikedSongsProvider({ children }) {
 
   const toggle = useCallback(async (videoId) => {
     if (!videoId) return false
-    if (!window.electronAPI?.ytMusicRate) {
+    if (!api?.ytMusicRate) {
       addToast('error', 'Likes need the desktop app', 3000)
       return false
     }
@@ -37,7 +38,7 @@ export function LikedSongsProvider({ children }) {
       else next.delete(videoId)
       return next
     })
-    const res = await window.electronAPI.ytMusicRate({ videoId, like: nextLiked }).catch((e) => ({ ok: false, reason: e.message }))
+    const res = await api.ytMusicRate({ videoId, like: nextLiked }).catch((e) => ({ ok: false, reason: e.message }))
     if (!res?.ok) {
       setIds((prev) => {
         const next = new Set(prev)

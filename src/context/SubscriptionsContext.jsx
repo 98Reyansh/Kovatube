@@ -1,3 +1,4 @@
+import { api } from '../lib/bridge'
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { useAuth } from './AuthContext'
 import { useSettings } from './SettingsContext'
@@ -45,7 +46,7 @@ export function SubscriptionsProvider({ children }) {
   // Photos from the signed-in subscriptions page land first. Anything still
   // missing is looked up a few at a time so the list is not stuck on initials.
   useEffect(() => {
-    if (!window.electronAPI?.ytChannelAvatar) return
+    if (!api?.ytChannelAvatar) return
     let cancelled = false
     const timer = setTimeout(() => {
       const missing = subscriptions.filter((name) => {
@@ -59,7 +60,7 @@ export function SubscriptionsProvider({ children }) {
           const batch = missing.slice(i, i + 3)
           batch.forEach((name) => avatarTriedRef.current.add(name.trim().toLowerCase()))
           const found = await Promise.all(batch.map(async (name) => {
-            const url = await window.electronAPI.ytChannelAvatar(name).catch(() => '')
+            const url = await api.ytChannelAvatar(name).catch(() => '')
             return [name.trim().toLowerCase(), url || '']
           }))
           if (cancelled) return
@@ -79,8 +80,8 @@ export function SubscriptionsProvider({ children }) {
   }, [subscriptions])
 
   useEffect(() => {
-    if (!window.electronAPI) return
-    window.electronAPI.ytPrefs().then(p => {
+    if (!api) return
+    api.ytPrefs().then(p => {
       if (p) {
         setSubscriptions(p.subscriptions || [])
         setHistory(p.history || [])
@@ -93,9 +94,9 @@ export function SubscriptionsProvider({ children }) {
   // subscriptions over and merge them into the local list (and prefs).
   useEffect(() => {
     if (!signedIn) return
-    if (!window.electronAPI || !window.electronAPI.ytAuthSubscriptions) return
+    if (!api || !api.ytAuthSubscriptions) return
     let cancelled = false
-    window.electronAPI.ytAuthSubscriptions()
+    api.ytAuthSubscriptions()
       .then(res => {
         if (cancelled || !res?.ok || !Array.isArray(res.subscriptions)) return
         setSubscriptions(prev => {
@@ -114,15 +115,15 @@ export function SubscriptionsProvider({ children }) {
 
   const subscribe = useCallback(async (channel) => {
     if (!channel || !channel.trim()) return
-    const list = window.electronAPI
-      ? await window.electronAPI.ytSubscribe(channel).catch(() => null)
+    const list = api
+      ? await api.ytSubscribe(channel).catch(() => null)
       : null
     if (list) setSubscriptions(list)
   }, [])
 
   const unsubscribe = useCallback(async (channel) => {
-    const list = window.electronAPI
-      ? await window.electronAPI.ytUnsubscribe(channel).catch(() => null)
+    const list = api
+      ? await api.ytUnsubscribe(channel).catch(() => null)
       : null
     if (list) setSubscriptions(list)
   }, [])
@@ -138,8 +139,8 @@ export function SubscriptionsProvider({ children }) {
 
   const recordWatch = useCallback(async (v) => {
     if (!v || !v.id) return
-    const h = window.electronAPI
-      ? await window.electronAPI.ytRecordWatch(v).catch(() => null)
+    const h = api
+      ? await api.ytRecordWatch(v).catch(() => null)
       : null
     if (h) setHistory(h)
   }, [])
@@ -159,7 +160,7 @@ export function SubscriptionsProvider({ children }) {
       setLoading(true)
       try {
         if (mode === 'signed') {
-          const data = await window.electronAPI.ytAuthHomePage({ continuation: '', seen: [], force: isForce })
+          const data = await api.ytAuthHomePage({ continuation: '', seen: [], force: isForce })
           if (data?.ok) {
             const vids = data.videos || []
             vids.forEach(v => { seenRef.current[v.id] = true })
@@ -182,7 +183,7 @@ export function SubscriptionsProvider({ children }) {
               : 'Signed-in feed unavailable right now.')
           }
         } else {
-          const data = await window.electronAPI.ytFypPage({ cursor: 0, seen: [] })
+          const data = await api.ytFypPage({ cursor: 0, seen: [] })
           const vids = data?.videos || []
           vids.forEach(v => { seenRef.current[v.id] = true })
           cursorRef.current = data?.nextCursor || 0
@@ -227,7 +228,7 @@ export function SubscriptionsProvider({ children }) {
     setHasMore(true)
     setFeed([])
     setError(null)
-    if (!window.electronAPI) {
+    if (!api) {
       setError('Electron API not available')
       setLoading(false)
       setLoaded(true)
@@ -240,14 +241,14 @@ export function SubscriptionsProvider({ children }) {
 
   // Load the NEXT page (infinite scroll). No-op while already loading or when exhausted.
   const loadMore = useCallback(async () => {
-    if (!window.electronAPI || loading || loadingMore || !hasMore) return
+    if (!api || loading || loadingMore || !hasMore) return
     setLoadingMore(true)
     try {
       const seen = Object.keys(seenRef.current)
       const useSigned = signedIn && settings.fypSource !== 'anon' && !!continuationRef.current
       let handled = false
       if (useSigned) {
-        const data = await window.electronAPI.ytAuthHomePage({ continuation: continuationRef.current, seen })
+        const data = await api.ytAuthHomePage({ continuation: continuationRef.current, seen })
         if (data?.ok) {
           const vids = (data.videos || []).filter(v => v.id && !seenRef.current[v.id])
           vids.forEach(v => { seenRef.current[v.id] = true })
@@ -265,7 +266,7 @@ export function SubscriptionsProvider({ children }) {
         }
       }
       if (!handled) {
-        const data = await window.electronAPI.ytFypPage({ cursor: cursorRef.current, seen: Object.keys(seenRef.current) })
+        const data = await api.ytFypPage({ cursor: cursorRef.current, seen: Object.keys(seenRef.current) })
         const vids = data?.videos || []
         setFeed(prev => {
           const next = [...prev]

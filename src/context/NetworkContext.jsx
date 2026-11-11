@@ -1,3 +1,4 @@
+import { api } from '../lib/bridge'
 import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
 
 // Tracks whether the app can reach the network and powers the offline screen.
@@ -30,8 +31,8 @@ export function NetworkProvider({ children }) {
     if (!force && now - lastProbeRef.current < 4000) return undefined
     lastProbeRef.current = now
     try {
-      if (window.electronAPI?.netProbe) {
-        const r = await window.electronAPI.netProbe()
+      if (api?.netProbe) {
+        const r = await api.netProbe()
         return !!(r && r.ok)
       }
       // Plain browser (e.g. preview): fall back to the navigator hint.
@@ -57,13 +58,13 @@ export function NetworkProvider({ children }) {
 
   // Main process couldn't reach the network on a real request → confirm offline.
   useEffect(() => {
-    if (!window.electronAPI?.onNetworkError) return
+    if (!api?.onNetworkError) return
     const onNetError = async () => {
       const ok = await probe()
       if (ok === false) setOnline(false)
     }
-    window.electronAPI.onNetworkError(onNetError)
-    return () => window.electronAPI.removeNetworkErrorListeners?.()
+    api.onNetworkError(onNetError)
+    return () => api.removeNetworkErrorListeners?.()
   }, [probe])
 
   const retry = useCallback(async () => {

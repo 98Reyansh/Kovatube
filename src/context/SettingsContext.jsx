@@ -1,3 +1,4 @@
+import { api } from '../lib/bridge'
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 
 const SettingsContext = createContext(null)
@@ -61,8 +62,8 @@ export function SettingsProvider({ children }) {
   const [hydrated, setHydrated] = useState(false)
 
   useEffect(() => {
-    if (!window.electronAPI) { setHydrated(true); return }
-    window.electronAPI.settingsGet().then(s => {
+    if (!api) { setHydrated(true); return }
+    api.settingsGet().then(s => {
       if (s) setSettings({ ...DEFAULTS, ...s })
       setHydrated(true)
     }).catch(() => setHydrated(true))
@@ -87,7 +88,7 @@ export function SettingsProvider({ children }) {
   const updateSetting = useCallback(async (key, value) => {
     setSettings(prev => {
       const next = { ...prev, [key]: value }
-      if (window.electronAPI) window.electronAPI.settingsSet({ [key]: value }).catch(() => {})
+      if (api) api.settingsSet({ [key]: value }).catch(() => {})
       return next
     })
   }, [])
@@ -95,7 +96,7 @@ export function SettingsProvider({ children }) {
   const updateSettings = useCallback(async (patch) => {
     setSettings(prev => {
       const next = { ...prev, ...patch }
-      if (window.electronAPI) window.electronAPI.settingsSet(patch).catch(() => {})
+      if (api) api.settingsSet(patch).catch(() => {})
       return next
     })
   }, [])
@@ -104,7 +105,7 @@ export function SettingsProvider({ children }) {
     setSettings(prev => {
       const order = ['light', 'dark', 'amoled', 'material']
       const nextTheme = order[(order.indexOf(prev.theme) + 1) % order.length] || 'dark'
-      if (window.electronAPI) window.electronAPI.settingsSet({ theme: nextTheme }).catch(() => {})
+      if (api) api.settingsSet({ theme: nextTheme }).catch(() => {})
       return { ...prev, theme: nextTheme }
     })
   }, [])

@@ -78,9 +78,54 @@ html.music-apple .track-row:hover { transform: none; }
 html.music-apple .track-row { border-radius: 12px; padding-top: 10px; padding-bottom: 10px; }
 
 .np-apple {
-  background:
-    radial-gradient(120% 80% at 50% 0%, rgb(var(--accent) / 0.45), transparent 55%),
-    linear-gradient(180deg, rgb(88 72 112) 0%, rgb(62 52 84) 48%, rgb(74 62 96) 100%);
+  background: linear-gradient(180deg, #2c2c2e 0%, #1c1c1e 48%, #161618 100%);
+}
+html.music-apple .ambient-stage .text-yt-red,
+html.music-apple .np-apple .text-yt-red {
+  color: #fff;
+}
+html.music-apple .miniplayer .text-yt-red,
+html.music-apple .miniplayer-full .text-yt-red {
+  color: #111;
+}
+html.dark.music-apple .miniplayer .text-yt-red,
+html.dark.music-apple .miniplayer-full .text-yt-red {
+  color: #fff;
+}
+html.music-apple .btn-accent {
+  background: #fff;
+  color: #111;
+}
+html.music-apple .btn-accent:hover {
+  background: #f2f2f7;
+  box-shadow: none;
+}
+html.music-apple .track-row .text-yt-red {
+  color: #111;
+}
+html.music-apple .eq span {
+  background: #111;
+}
+html.dark.music-apple .track-row .text-yt-red {
+  color: #fff;
+}
+html.dark.music-apple .eq span {
+  background: #fff;
+}
+html.music-apple .track-row[data-active='true'] {
+  background: rgb(0 0 0 / 0.06);
+}
+html.dark.music-apple .track-row[data-active='true'] {
+  background: rgb(255 255 255 / 0.08);
+}
+html.music-apple .music-switch.bg-yt-red {
+  background-color: #34c759;
+}
+html.music-apple .miniplayer input[type='range'].range-minimal::-webkit-slider-thumb,
+html.music-apple .miniplayer-full input[type='range'].range-minimal::-webkit-slider-thumb,
+html.music-apple .ambient-stage input[type='range'].range-minimal::-webkit-slider-thumb,
+html.music-apple .np-apple input[type='range'].range-minimal::-webkit-slider-thumb {
+  background: #fff;
 }
 .apple-play {
   width: 78px;
@@ -1222,6 +1267,9 @@ html.dark.amoled .miniplayer-panel { background: #070707; }
   height: 100%;
   pointer-events: none;
   opacity: 0.82;
+}
+.ambient-stage .cover-shader {
+  opacity: 1;
 }
 
 .lrc-line {

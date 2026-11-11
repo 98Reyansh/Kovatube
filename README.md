@@ -7,7 +7,7 @@
 A fast, minimalist desktop client that brings video and music together — with a persistent player, word-by-word synced lyrics, downloads, and your signed-in library.
 
 [![Platform](https://img.shields.io/badge/platform-Linux-informational?style=flat-square)](#-getting-started)
-[![Electron](https://img.shields.io/badge/Electron-28-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8D8?style=flat-square&logo=tauri&logoColor=white)](https://v2.tauri.app/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=white)](https://react.dev/)
 [![Tailwind](https://img.shields.io/badge/Tailwind-3-38BDF8?style=flat-square&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](#-license)
@@ -20,7 +20,7 @@ A fast, minimalist desktop client that brings video and music together — with 
 
 Kovatube is a desktop app for **watching YouTube** and **listening to YouTube Music** without a browser full of tabs. It plays video and music, keeps a queue that survives while you browse, and follows along with the lyrics — highlighting the current line and each word as it's sung.
 
-It's built on Electron + React, talks to YouTube's InnerTube API directly, and uses `yt-dlp` as a fallback/for downloads. Sign in with your Google account to get your real subscriptions, For You feed, and music library.
+It's a React app in a Tauri window, with the YouTube and download work in Rust. It talks to YouTube's InnerTube API directly and uses `yt-dlp` as a fallback and for downloads. Sign in with your Google account to get your real subscriptions, For You feed, and music library. An existing Electron 1.2.0 install does not update into this build; install it fresh. Settings, playlists, and downloads already in `~/.config/Kovatube` stay there.
 
 ---
 
@@ -94,9 +94,9 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 
 | Layer | Technology |
 | --- | --- |
-| Shell | [Electron](https://www.electronjs.org/) 28 |
+| Shell | [Tauri](https://v2.tauri.app/) 2 (Rust) |
 | UI | [React](https://react.dev/) 18 + [React Router](https://reactrouter.com/) 6 |
-| Build | [Vite](https://vitejs.dev/) 5 (`vite-plugin-electron`) |
+| Build | [Vite](https://vitejs.dev/) 5 |
 | Styling | [Tailwind CSS](https://tailwindcss.com/) 3 |
 | Media | HTML5 audio/video + [hls.js](https://github.com/video-dev/hls.js/) for HLS relays |
 | Data | YouTube **InnerTube** API, [LRCLIB](https://lrclib.net/) for synced lyrics, `yt-dlp` for downloads |
@@ -107,7 +107,9 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 
 ### Prerequisites
 - **Node.js** 18+ and npm
-- **`yt-dlp`** and **`ffmpeg`** on your `PATH`, or placed in `bin/` (`yt-dlp.exe` and `ffmpeg.exe` on Windows)
+- **Rust** stable (`rustup`)
+- Linux webview libraries: `webkit2gtk` 4.1, GTK 3, and `libsoup` 3
+- **`yt-dlp`** and **`ffmpeg`** on your `PATH`. They are not bundled.
   ```bash
   pipx install yt-dlp   # or: sudo pip install yt-dlp
   ```
@@ -115,40 +117,29 @@ It's built on Electron + React, talks to YouTube's InnerTube API directly, and u
 ### Install & run (development)
 ```bash
 npm install
-# build the renderer + main process, then launch Electron
-npx vite build
-./node_modules/electron/dist/electron .
+npm run dev
 ```
 
 ### Desktop packages
 ```bash
-npm run electron:build:linux   # release/Kovatube-1.0.0-x86_64.AppImage
-npm run electron:build:win     # Windows NSIS installer
-npm run electron:build:mac     # dmg + zip; run this on a Mac
+npm run tauri:build
 ```
 
-On Linux, the NSIS installer needs Wine (`sudo dnf install wine`). Without Wine, this machine can still pack a portable Windows folder:
+That writes the Linux AppImage and deb, the Windows installer, and the macOS disk image under `src-tauri/target/release/bundle/`. Build the Windows installer on Windows and the disk image on a Mac.
 
-```bash
-npx electron-builder --win zip --x64 -c.win.signAndEditExecutable=false
-```
-
-GitHub Actions (`.github/workflows/desktop.yml`) builds the AppImage, the Windows installer, and the Mac disk image when you push a `v*` tag or run the workflow by hand. Add repository secrets `CSC_LINK` and `CSC_KEY_PASSWORD` (an Apple Developer certificate) so the Mac job is signed. Without those secrets the Mac build is unsigned and Gatekeeper warns. An unsigned Windows installer runs, with a SmartScreen warning.
-
-ffmpeg is GPL or LGPL depending on the build. Include that license if you ship an ffmpeg binary inside `bin/`.
+GitHub Actions (`.github/workflows/desktop.yml`) builds those packages when you push a `v*` tag or run the workflow by hand. This release is a new install: an Electron 1.2.0 copy will not see it as an update. Set the `TAURI_SIGNING_PRIVATE_KEY` secret when you want Tauri updater signatures attached for later Rust builds. Without an Apple certificate the Mac build is unsigned and Gatekeeper warns. An unsigned Windows installer runs, with a SmartScreen warning.
 
 ### Android
-This repository is the desktop app. Electron does not run on Android, and playback here depends on launching `yt-dlp` and `ffmpeg`. A phone version would be a separate client, distributed as a sideloaded APK rather than a Play Store app. That work starts after the Mac and Windows packages.
+This repository is the desktop app. Playback depends on launching `yt-dlp` and `ffmpeg`. A phone version would be a separate client.
 
 ---
 
 ## 📁 Project structure
 
 ```
-electron/
-  main.js        # main process: InnerTube, music API, lyrics, downloads, playback
-  preload.js     # safe IPC bridge exposed to the renderer (window.electronAPI)
+src-tauri/       # Rust shell: Innertube, downloads, playback proxy, signed-in session
 src/
+  lib/bridge.js  # the same desktop API, backed by Tauri commands
   components/    # UI: player, header, feeds, music, mini-player, settings…
     music/       # YouTube Music browse/search/detail + track & card components
   context/       # React context: queue, auth, settings, downloads, saved…

@@ -1,3 +1,4 @@
+import { api } from '../lib/bridge'
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 
 const SmartDownloadContext = createContext(null)
@@ -17,19 +18,19 @@ export function SmartDownloadProvider({ children }) {
   const [hasHydrated, setHasHydrated] = useState(false)
 
   useEffect(() => {
-    if (!window.electronAPI) { setHasHydrated(true); return }
-    window.electronAPI.smartDlStatus().then(status => {
+    if (!api) { setHasHydrated(true); return }
+    api.smartDlStatus().then(status => {
       setEnabled(status.enabled)
       if (typeof status.clipboard === 'boolean') setClipboard(status.clipboard)
       setCounts({ fyp: status.count || 0, clipboard: status.clipboardCount || 0, limit: status.limit || 0 })
       setActiveDownloads(status.active)
       setHasHydrated(true)
     }).catch(() => setHasHydrated(true))
-    window.electronAPI.smartDlHistory().then(h => setHistory(h)).catch(() => {})
+    api.smartDlHistory().then(h => setHistory(h)).catch(() => {})
   }, [])
 
   useEffect(() => {
-    if (!window.electronAPI) return
+    if (!api) return
 
     const handleProgress = (data) => {
       setActiveDownloads(prev => {
@@ -76,18 +77,18 @@ export function SmartDownloadProvider({ children }) {
       setActiveDownloads(prev => prev.filter(d => d.id !== data.id))
     }
 
-    window.electronAPI.onSmartDlProgress(handleProgress)
-    window.electronAPI.onSmartDlComplete(handleComplete)
-    window.electronAPI.onSmartDlCancelled(handleCancelled)
+    api.onSmartDlProgress(handleProgress)
+    api.onSmartDlComplete(handleComplete)
+    api.onSmartDlCancelled(handleCancelled)
 
-    return () => { window.electronAPI.removeSmartDlListeners() }
+    return () => { api.removeSmartDlListeners() }
   }, [])
 
   const toggleSmartDownload = useCallback(async (nextEnabled) => {
-    if (!window.electronAPI) return false
+    if (!api) return false
     try {
       const val = nextEnabled !== undefined ? nextEnabled : !enabled
-      const result = await window.electronAPI.smartDlToggle(val)
+      const result = await api.smartDlToggle(val)
       setEnabled(result.enabled)
       if (typeof result.clipboard === 'boolean') setClipboard(result.clipboard)
       return result.enabled
@@ -98,10 +99,10 @@ export function SmartDownloadProvider({ children }) {
   }, [enabled])
 
   const toggleClipboard = useCallback(async (nextEnabled) => {
-    if (!window.electronAPI) return false
+    if (!api) return false
     try {
       const val = nextEnabled !== undefined ? nextEnabled : !clipboard
-      const result = await window.electronAPI.smartDlClipboardToggle(val)
+      const result = await api.smartDlClipboardToggle(val)
       if (typeof result.clipboard === 'boolean') setClipboard(result.clipboard)
       return result.clipboard
     } catch (e) {
@@ -111,21 +112,21 @@ export function SmartDownloadProvider({ children }) {
   }, [clipboard])
 
   const cancelSmartDownload = useCallback(async (dlId) => {
-    if (!window.electronAPI) return false
-    try { return await window.electronAPI.smartDlCancel(dlId) }
+    if (!api) return false
+    try { return await api.smartDlCancel(dlId) }
     catch (e) { console.error('[SmartDownloadContext] cancel failed:', e); return false }
   }, [])
 
   const refreshHistory = useCallback(async () => {
-    if (!window.electronAPI) return
-    const h = await window.electronAPI.smartDlHistory()
+    if (!api) return
+    const h = await api.smartDlHistory()
     setHistory(h)
   }, [])
 
   const refreshStatus = useCallback(async () => {
-    if (!window.electronAPI) return
+    if (!api) return
     try {
-      const status = await window.electronAPI.smartDlStatus()
+      const status = await api.smartDlStatus()
       setEnabled(status.enabled)
       if (typeof status.clipboard === 'boolean') setClipboard(status.clipboard)
       setCounts({ fyp: status.count || 0, clipboard: status.clipboardCount || 0, limit: status.limit || 0 })
@@ -134,9 +135,9 @@ export function SmartDownloadProvider({ children }) {
   }, [])
 
   const resetCounts = useCallback(async () => {
-    if (!window.electronAPI) return null
+    if (!api) return null
     try {
-      const res = await window.electronAPI.smartDlResetCounts()
+      const res = await api.smartDlResetCounts()
       setCounts(c => ({ ...c, fyp: 0, clipboard: 0 }))
       return res
     } catch (e) {

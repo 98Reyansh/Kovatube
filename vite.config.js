@@ -1,11 +1,16 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import electron from 'vite-plugin-electron'
-import renderer from 'vite-plugin-electron-renderer'
 import path from 'path'
 
 export default defineConfig({
   base: './',
+  clearScreen: false,
+  server: {
+    host: '127.0.0.1',
+    port: 1420,
+    strictPort: true,
+  },
+  envPrefix: ['VITE_', 'TAURI_'],
   build: {
     modulePreload: { polyfill: false },
   },
@@ -17,31 +22,6 @@ export default defineConfig({
         return html.replace(/ crossorigin/g, '')
       },
     },
-    electron([
-      {
-        entry: 'electron/main.js',
-        onstart(options) {
-          options.startup()
-        },
-        vite: {
-          build: {
-            outDir: 'dist-electron',
-          },
-        },
-      },
-      {
-        entry: 'electron/preload.js',
-        onstart(options) {
-          options.reload()
-        },
-        vite: {
-          build: {
-            outDir: 'dist-electron',
-          },
-        },
-      },
-    ]),
-    renderer(),
   ],
   resolve: {
     alias: {

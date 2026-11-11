@@ -57,7 +57,7 @@ function Toggle({ checked, onChange, disabled }) {
       aria-checked={checked}
       disabled={disabled}
       onClick={onChange}
-      className={`relative w-9 h-5 rounded-full transition-colors shrink-0 disabled:opacity-50 ${checked ? 'bg-yt-red' : 'bg-gray-300 dark:bg-gray-600'}`}
+      className={`music-switch relative w-9 h-5 rounded-full transition-colors shrink-0 disabled:opacity-50 ${checked ? 'bg-yt-red' : 'bg-gray-300 dark:bg-gray-600'}`}
     >
       <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : ''}`} />
     </button>

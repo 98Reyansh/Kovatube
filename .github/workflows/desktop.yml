@@ -16,40 +16,47 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            script: npx electron-builder --linux --publish never
+            bundles: appimage,deb
           - os: windows-latest
-            script: npx electron-builder --win --x64 --publish never
+            bundles: nsis
           - os: macos-latest
-            script: npx electron-builder --mac --arm64 --x64 --publish never
+            bundles: dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux webview libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev build-essential file
       - run: npm ci
-      - run: npm run build
-      - name: Package
+      - name: Package Kovatube
         shell: bash
         env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          if [ -z "${CSC_LINK}" ]; then unset CSC_LINK; fi
-          if [ -z "${CSC_KEY_PASSWORD}" ]; then unset CSC_KEY_PASSWORD; fi
-          ${{ matrix.script }}
+          args=(--bundles "${{ matrix.bundles }}")
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            args+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+          fi
+          npm run tauri:build -- "${args[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: kovatube-${{ matrix.os }}
           if-no-files-found: error
           path: |
-            release/*.AppImage
-            release/*.dmg
-            release/*.zip
-            release/*.exe
-            release/*.yml
-            release/*.blockmap
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.sig
+            src-tauri/target/release/bundle/**/*.json
 
   release:
     needs: build
@@ -73,13 +80,13 @@ jobs:
             TAG="$(git describe --tags --abbrev=0)"
           fi
           VERSION="${TAG#v}"
-          mapfile -t files < <(find release-files -type f \( -name '*.AppImage' -o -name '*.exe' -o -name '*.dmg' -o -name '*.zip' -o -name '*.yml' -o -name '*.blockmap' \))
+          mapfile -t files < <(find release-files -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.exe' -o -name '*.dmg' -o -name '*.sig' -o -name 'latest.json' \))
           notes=$(cat <<'EOF'
-          Linux AppImage, Windows installer, and macOS disk images and zip archives (Apple silicon and Intel).
+          This is a new Kovatube install. It does not update an Electron 1.2.0 install in place. Install this package on its own, then open it once and sign in to YouTube again.
 
-          This release adds video comments, including posting while signed in, and plays a video at double speed while the spacebar is held. The watch controls follow the YouTube bar, music keeps playing when a stream stalls, and the app can offer an update from GitHub releases.
+          Settings, playlists, and downloads already in ~/.config/Kovatube stay where they are. yt-dlp and ffmpeg stay separate programs on your PATH.
 
-          yt-dlp and ffmpeg still need to be installed, unless you place them in the app bin folder. These macOS and Windows builds are unsigned, so Gatekeeper and SmartScreen warn the first time you open them.
+          Linux AppImage and deb, Windows installer, and macOS disk image. These macOS and Windows builds are unsigned, so Gatekeeper and SmartScreen warn the first time you open them. When the TAURI_SIGNING_PRIVATE_KEY secret is set, the release also includes Tauri updater signatures for later Rust builds.
           EOF
           )
           notes="$(printf '%s\n' "$notes" | sed 's/^ \{10\}//')"

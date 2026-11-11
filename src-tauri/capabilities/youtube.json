@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "youtube",
+  "description": "Signed-in YouTube pages can return innertube responses",
+  "windows": ["signin", "session", "music"],
+  "remote": {
+    "urls": [
+      "https://www.youtube.com/*",
+      "https://youtube.com/*",
+      "https://*.youtube.com/*",
+      "https://music.youtube.com/*",
+      "https://accounts.google.com/*",
+      "https://*.google.com/*",
+      "https://*.googleusercontent.com/*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "allow-auth-fetch"
+  ]
+}

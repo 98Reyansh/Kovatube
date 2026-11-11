@@ -1,3 +1,4 @@
+import { api } from '../lib/bridge'
 import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
 
 // Persistent music queue + single global <audio> element.
@@ -78,7 +79,7 @@ export function QueueProvider({ children }) {
 
   const setWantPlay = (on) => {
     wantPlayRef.current = on
-    const pending = window.electronAPI?.audioKeepalive?.(on)
+    const pending = api?.audioKeepalive?.(on)
     if (pending && typeof pending.catch === 'function') pending.catch(() => {})
   }
   const playAtRef = useRef(() => {})
@@ -142,11 +143,11 @@ export function QueueProvider({ children }) {
       return
     }
 
-    if (!id || !window.electronAPI?.ytAudioStream) { setLoading(false); return }
+    if (!id || !api?.ytAudioStream) { setLoading(false); return }
 
     const t0 = performance.now()
     try {
-      const res = await window.electronAPI.ytAudioStream(id)
+      const res = await api.ytAudioStream(id)
       if (token !== tokenRef.current) return
       if (!res || !res.ok || !res.audioUrl) {
         setLoading(false)
@@ -300,7 +301,7 @@ export function QueueProvider({ children }) {
         if (audio.paused) await audio.play()
         return
       }
-      const res = await window.electronAPI?.ytAudioStream?.(id, { fresh: true })
+      const res = await api?.ytAudioStream?.(id, { fresh: true })
       if (!wantPlayRef.current) return
       if (!res || !res.ok || !res.audioUrl) {
         setError((res && res.reason) || 'Playback stalled')
@@ -349,7 +350,7 @@ export function QueueProvider({ children }) {
         const nid = trackId(nt)
         if (nid && !nt?.localUrl && !prefetchedRef.current.has(nid)) {
           prefetchedRef.current.add(nid)
-          window.electronAPI?.ytAudioPrewarm?.(nid).catch(() => {})
+          api?.ytAudioPrewarm?.(nid).catch(() => {})
         }
       }
     }

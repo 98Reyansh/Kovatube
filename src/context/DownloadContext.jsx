@@ -1,3 +1,4 @@
+import { api } from '../lib/bridge'
 import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
 import { useToast } from './ToastContext'
 
@@ -38,17 +39,17 @@ export function DownloadProvider({ children }) {
   const [hasHydrated, setHasHydrated] = useState(false)
 
   useEffect(() => {
-    if (!window.electronAPI) return
-    window.electronAPI.dlActive().then(list => {
+    if (!api) return
+    api.dlActive().then(list => {
       setActiveDownloads(list)
       setHasHydrated(true)
     }).catch(() => setHasHydrated(true))
-    window.electronAPI.dlCompleted().then(list => setCompletedDownloads(list)).catch(() => {})
-    window.electronAPI.dlPlaylists?.().then(list => setPlaylists(list || [])).catch(() => {})
+    api.dlCompleted().then(list => setCompletedDownloads(list)).catch(() => {})
+    api.dlPlaylists?.().then(list => setPlaylists(list || [])).catch(() => {})
   }, [])
 
   useEffect(() => {
-    if (!window.electronAPI) return
+    if (!api) return
 
     const handleProgress = (data) => {
       if (data.status === 'downloading') {
@@ -110,18 +111,18 @@ export function DownloadProvider({ children }) {
       }
     }
 
-    window.electronAPI.onDownloadProgress(handleProgress)
-    window.electronAPI.onDownloadComplete(handleComplete)
+    api.onDownloadProgress(handleProgress)
+    api.onDownloadComplete(handleComplete)
 
     return () => {
-      window.electronAPI.removeDownloadListeners()
+      api.removeDownloadListeners()
     }
   }, [])
 
   const startDownload = useCallback(async ({ videoId, quality, format, title, thumbnail, audio }) => {
-    if (!window.electronAPI) return null
+    if (!api) return null
     try {
-      const dlId = await window.electronAPI.dlStart({ videoId, quality, format, title, thumbnail, audio: !!audio })
+      const dlId = await api.dlStart({ videoId, quality, format, title, thumbnail, audio: !!audio })
       if (dlId) {
         setActiveDownloads(prev => [...prev, {
           id: dlId, videoId, quality, format, title, thumbnail,
@@ -137,9 +138,9 @@ export function DownloadProvider({ children }) {
   }, [])
 
   const cancelDownload = useCallback(async (downloadId) => {
-    if (!window.electronAPI) return false
+    if (!api) return false
     try {
-      const ok = await window.electronAPI.dlCancel(downloadId)
+      const ok = await api.dlCancel(downloadId)
       if (ok) setActiveDownloads(prev => prev.filter(d => d.id !== downloadId))
       return ok
     } catch (e) {
@@ -149,49 +150,49 @@ export function DownloadProvider({ children }) {
   }, [])
 
   const playFile = useCallback(async (filePath) => {
-    if (!window.electronAPI) return false
-    try { return await window.electronAPI.dlPlay(filePath) }
+    if (!api) return false
+    try { return await api.dlPlay(filePath) }
     catch (e) { console.error('[DownloadContext] playFile failed:', e); return false }
   }, [])
 
   const showInFolder = useCallback(async (filePath) => {
-    if (!window.electronAPI) return false
-    try { return await window.electronAPI.dlShowInFolder(filePath) }
+    if (!api) return false
+    try { return await api.dlShowInFolder(filePath) }
     catch (e) { console.error('[DownloadContext] showInFolder failed:', e); return false }
   }, [])
 
   const refreshPlaylists = useCallback(async () => {
-    if (!window.electronAPI?.dlPlaylists) return
-    try { setPlaylists(await window.electronAPI.dlPlaylists() || []) } catch {}
+    if (!api?.dlPlaylists) return
+    try { setPlaylists(await api.dlPlaylists() || []) } catch {}
   }, [])
 
   // Auto-download newly added songs: toggle the switch, or check a playlist now.
   const setPlaylistAutoSync = useCallback(async (id, enabled) => {
-    if (!window.electronAPI?.dlPlaylistAutoSync) return false
+    if (!api?.dlPlaylistAutoSync) return false
     try {
-      const ok = await window.electronAPI.dlPlaylistAutoSync(id, enabled)
+      const ok = await api.dlPlaylistAutoSync(id, enabled)
       await refreshPlaylists()
       return ok
     } catch { return false }
   }, [refreshPlaylists])
 
   const syncPlaylist = useCallback(async (id) => {
-    if (!window.electronAPI?.dlPlaylistSync) return null
-    try { return await window.electronAPI.dlPlaylistSync(id) }
+    if (!api?.dlPlaylistSync) return null
+    try { return await api.dlPlaylistSync(id) }
     catch { return null }
   }, [])
 
   const syncAllPlaylists = useCallback(async () => {
-    if (!window.electronAPI?.dlSyncAll) return null
-    try { return await window.electronAPI.dlSyncAll() }
+    if (!api?.dlSyncAll) return null
+    try { return await api.dlSyncAll() }
     catch { return null }
   }, [])
 
   const refreshCompleted = useCallback(async () => {
-    if (!window.electronAPI) return
+    if (!api) return
     const [list, pls] = await Promise.all([
-      window.electronAPI.dlCompleted(),
-      window.electronAPI.dlPlaylists ? window.electronAPI.dlPlaylists() : Promise.resolve([]),
+      api.dlCompleted(),
+      api.dlPlaylists ? api.dlPlaylists() : Promise.resolve([]),
     ])
     setCompletedDownloads(list)
     setPlaylists(pls || [])
@@ -200,15 +201,15 @@ export function DownloadProvider({ children }) {
   // The main process tells us when a playlist record changes (a track landed or
   // the group was created) so the Downloaded tab can update as it fills in.
   useEffect(() => {
-    if (!window.electronAPI?.onPlaylistUpdate) return
+    if (!api?.onPlaylistUpdate) return
     const onUpdate = () => { refreshPlaylists() }
-    window.electronAPI.onPlaylistUpdate(onUpdate)
-    return () => { window.electronAPI.removePlaylistUpdateListeners?.() }
+    api.onPlaylistUpdate(onUpdate)
+    return () => { api.removePlaylistUpdateListeners?.() }
   }, [refreshPlaylists])
 
   // Auto-sync start/finish, so the UI can spin the playlist's sync control.
   useEffect(() => {
-    if (!window.electronAPI?.onPlaylistSync) return
+    if (!api?.onPlaylistSync) return
     const onSync = (data) => {
       const id = data && data.id
       if (id) {
@@ -220,8 +221,8 @@ export function DownloadProvider({ children }) {
       }
       refreshPlaylists()
     }
-    window.electronAPI.onPlaylistSync(onSync)
-    return () => { window.electronAPI.removePlaylistSyncListeners?.() }
+    api.onPlaylistSync(onSync)
+    return () => { api.removePlaylistSyncListeners?.() }
   }, [refreshPlaylists])
 
   return (

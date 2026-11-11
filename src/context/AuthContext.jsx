@@ -1,3 +1,4 @@
+import { api } from '../lib/bridge'
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 
 const AuthContext = createContext(null)
@@ -18,8 +19,8 @@ export function AuthProvider({ children }) {
   // state instantly (no page navigation), then the main process pushes fresh
   // account details over 'auth-updated' once the background probe finishes.
   useEffect(() => {
-    if (!window.electronAPI) { setChecking(false); return }
-    window.electronAPI.ytAuthStatus().then(st => {
+    if (!api) { setChecking(false); return }
+    api.ytAuthStatus().then(st => {
       setSignedIn(!!st?.signedIn)
       setAccount(st?.account || null)
     }).catch(() => setSignedIn(false)).finally(() => setChecking(false))
@@ -29,15 +30,15 @@ export function AuthProvider({ children }) {
       setSignedIn(!!st.signedIn)
       setAccount(st.account || null)
     }
-    if (window.electronAPI.onAuthUpdated) {
-      window.electronAPI.onAuthUpdated(onAuthUpdated)
-      return () => { if (window.electronAPI.removeAuthUpdatedListeners) window.electronAPI.removeAuthUpdatedListeners() }
+    if (api.onAuthUpdated) {
+      api.onAuthUpdated(onAuthUpdated)
+      return () => { if (api.removeAuthUpdatedListeners) api.removeAuthUpdatedListeners() }
     }
   }, [])
 
   const refresh = useCallback(async () => {
-    if (!window.electronAPI) return
-    const st = await window.electronAPI.ytAuthStatus().catch(() => null)
+    if (!api) return
+    const st = await api.ytAuthStatus().catch(() => null)
     if (st) {
       setSignedIn(!!st.signedIn)
       setAccount(st.account || null)
@@ -45,10 +46,10 @@ export function AuthProvider({ children }) {
   }, [])
 
   const signIn = useCallback(async () => {
-    if (!window.electronAPI || signingIn) return
+    if (!api || signingIn) return
     setSigningIn(true)
     try {
-      const st = await window.electronAPI.ytAuthSignIn()
+      const st = await api.ytAuthSignIn()
       setSignedIn(!!st?.ok)
       setAccount(st?.account || null)
       return st?.ok
@@ -61,8 +62,8 @@ export function AuthProvider({ children }) {
   }, [signingIn])
 
   const signOut = useCallback(async () => {
-    if (!window.electronAPI) return
-    try { await window.electronAPI.ytAuthSignOut() } catch (e) { console.error('[Auth] signOut error:', e) }
+    if (!api) return
+    try { await api.ytAuthSignOut() } catch (e) { console.error('[Auth] signOut error:', e) }
     setSignedIn(false)
     setAccount(null)
   }, [])

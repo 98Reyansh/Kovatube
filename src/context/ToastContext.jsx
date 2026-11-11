@@ -1,3 +1,4 @@
+import { api } from '../lib/bridge'
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 
 const ToastContext = createContext(null)
@@ -25,12 +26,12 @@ export function ToastProvider({ children }) {
   }, [])
 
   useEffect(() => {
-    if (!window.electronAPI) return
+    if (!api) return
     const handleToast = (data) => {
       addToast(data.type || 'info', data.message, data.duration)
     }
-    window.electronAPI.onToast(handleToast)
-    return () => { window.electronAPI.removeToastListeners() }
+    api.onToast(handleToast)
+    return () => { api.removeToastListeners() }
   }, [addToast])
 
   const removeToast = useCallback((id) => {
